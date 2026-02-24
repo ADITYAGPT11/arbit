@@ -15,7 +15,7 @@ class ArbitragePlatformTester:
         self.failed_tests = []
         self.passed_tests = []
 
-    def run_test(self, name, method, endpoint, expected_status, data=None, headers=None):
+    def run_test(self, name, method, endpoint, expected_status, data=None, headers=None, params=None, send_as_list=False):
         """Run a single API test"""
         url = f"{self.api_url}/{endpoint}"
         test_headers = {'Content-Type': 'application/json'}
@@ -31,9 +31,17 @@ class ArbitragePlatformTester:
         
         try:
             if method == 'GET':
-                response = requests.get(url, headers=test_headers, timeout=10)
+                response = requests.get(url, headers=test_headers, params=params, timeout=10)
             elif method == 'POST':
-                response = requests.post(url, json=data, headers=test_headers, timeout=10)
+                if send_as_list and data:
+                    # Send data directly as list
+                    response = requests.post(url, json=data, headers=test_headers, params=params, timeout=10)
+                elif params:
+                    # Send as query parameters
+                    response = requests.post(url, headers=test_headers, params=data, timeout=10)
+                else:
+                    # Send as JSON body
+                    response = requests.post(url, json=data, headers=test_headers, timeout=10)
             elif method == 'DELETE':
                 response = requests.delete(url, headers=test_headers, timeout=10)
             else:
