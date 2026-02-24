@@ -176,15 +176,11 @@ class ArbitragePlatformTester:
             "stop_loss_pct": 5.0,
             "price": 2850.0
         }
-        self.run_test("Position Size Calculation", "POST", "risk/position-size", 200, position_data)
+        self.run_test("Position Size Calculation", "POST", "risk/position-size", 200, position_data, params=True)
         
         # Value at Risk
-        var_data = {
-            "returns": [0.01, -0.015, 0.02, 0.005, -0.01, 0.008, 0.012, -0.003, 0.009, -0.006],
-            "confidence": 0.95,
-            "portfolio_value": 1000000.0
-        }
-        self.run_test("Value at Risk (VaR)", "POST", "risk/var", 200, var_data)
+        var_data = [0.01, -0.015, 0.02, 0.005, -0.01, 0.008, 0.012, -0.003, 0.009, -0.006]
+        self.run_test("Value at Risk (VaR)", "POST", "risk/var", 200, var_data, send_as_list=True)
         
         # Margin calculation
         margin_data = {
@@ -192,7 +188,7 @@ class ArbitragePlatformTester:
             "volatility": 15.0,
             "is_futures": True
         }
-        self.run_test("Margin Requirement", "POST", "risk/margin", 200, margin_data)
+        self.run_test("Margin Requirement", "POST", "risk/margin", 200, margin_data, params=True)
 
     def test_backtest_endpoints(self):
         """Test backtesting endpoints"""
