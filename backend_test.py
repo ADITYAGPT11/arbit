@@ -114,7 +114,7 @@ class ArbitragePlatformTester:
             "days_to_expiry": 30,
             "risk_free_rate": 7.0
         }
-        self.run_test("Cash & Carry Arbitrage", "POST", "arbitrage/cash-carry", 200, cash_carry_data)
+        self.run_test("Cash & Carry Arbitrage", "POST", "arbitrage/cash-carry", 200, cash_carry_data, params=True)
         
         # Synthetic futures arbitrage
         synthetic_data = {
@@ -124,7 +124,7 @@ class ArbitragePlatformTester:
             "strike": 2850.0,
             "futures_price": 2870.0
         }
-        self.run_test("Synthetic Futures Arbitrage", "POST", "arbitrage/synthetic", 200, synthetic_data)
+        self.run_test("Synthetic Futures Arbitrage", "POST", "arbitrage/synthetic", 200, synthetic_data, params=True)
         
         # Calendar spread
         calendar_data = {
@@ -133,7 +133,7 @@ class ArbitragePlatformTester:
             "near_expiry_days": 15,
             "far_expiry_days": 45
         }
-        self.run_test("Calendar Spread", "POST", "arbitrage/calendar-spread", 200, calendar_data)
+        self.run_test("Calendar Spread", "POST", "arbitrage/calendar-spread", 200, calendar_data, params=True)
         
         # Statistical arbitrage
         statistical_data = {
