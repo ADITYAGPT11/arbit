@@ -1,0 +1,343 @@
+import { useState, useEffect, useCallback } from "react";
+import axios from "axios";
+import { API } from "../App";
+import {
+  TrendingUp,
+  TrendingDown,
+  RefreshCw,
+  Activity,
+  ArrowUpRight,
+  ArrowDownRight,
+} from "lucide-react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+} from "recharts";
+
+export default function Dashboard() {
+  const [indices, setIndices] = useState([]);
+  const [stocks, setStocks] = useState([]);
+  const [arbitrageOpps, setArbitrageOpps] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState(null);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [indicesRes, stocksRes, arbRes] = await Promise.all([
+        axios.get(`${API}/market/indices`),
+        axios.get(`${API}/market/stocks`),
+        axios.get(`${API}/arbitrage/cross-exchange`),
+      ]);
+
+      setIndices(indicesRes.data);
+      setStocks(stocksRes.data.filter((s) => s.price > 0).slice(0, 20));
+      setArbitrageOpps(arbRes.data.slice(0, 10));
+      setLastUpdate(new Date());
+    } catch (error) {
+      console.error("Error fetching data:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30000); // Refresh every 30 seconds
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  const formatPrice = (price) => {
+    if (!price) return "—";
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: "INR",
+      minimumFractionDigits: 2,
+    }).format(price);
+  };
+
+  const formatChange = (change) => {
+    if (change === undefined || change === null) return "—";
+    const sign = change >= 0 ? "+" : "";
+    return `${sign}${change.toFixed(2)}%`;
+  };
+
+  // Generate mock chart data for indices
+  const generateChartData = (baseValue) => {
+    const data = [];
+    let value = baseValue * 0.98;
+    for (let i = 0; i < 24; i++) {
+      value = value + (Math.random() - 0.48) * (baseValue * 0.002);
+      data.push({ time: `${i}:00`, value: Math.round(value * 100) / 100 });
+    }
+    return data;
+  };
+
+  if (loading) {
+    return (
+      <div className="page-container">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-container" data-testid="dashboard">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-2xl font-bold">Market Dashboard</h1>
+          <p className="text-zinc-500 text-sm">
+            Real-time Indian market overview
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="text-xs text-zinc-500">
+            Last updated:{" "}
+            {lastUpdate ? lastUpdate.toLocaleTimeString() : "—"}
+          </span>
+          <button
+            onClick={fetchData}
+            className="btn btn-secondary flex items-center gap-2"
+            data-testid="refresh-btn"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Indices */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        {indices.map((index) => (
+          <div
+            key={index.index}
+            className="card"
+            data-testid={`index-${index.index}`}
+          >
+            <div className="flex justify-between items-start mb-2">
+              <span className="text-xs text-zinc-500 font-medium">
+                {index.index}
+              </span>
+              <span
+                className={`text-xs font-medium ${
+                  index.change >= 0 ? "text-green-500" : "text-red-500"
+                }`}
+              >
+                {formatChange(index.change_pct)}
+              </span>
+            </div>
+            <div className="font-mono text-xl font-bold">
+              {index.value?.toLocaleString("en-IN") || "—"}
+            </div>
+            <div
+              className={`flex items-center gap-1 text-sm ${
+                index.change >= 0 ? "text-green-500" : "text-red-500"
+              }`}
+            >
+              {index.change >= 0 ? (
+                <ArrowUpRight className="w-4 h-4" />
+              ) : (
+                <ArrowDownRight className="w-4 h-4" />
+              )}
+              <span>{index.change?.toFixed(2) || "—"}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Main Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Stock Prices */}
+        <div className="lg:col-span-2 card" data-testid="stock-prices-table">
+          <div className="card-header">
+            <span className="card-title">F&O Stocks - NSE vs BSE</span>
+            <Activity className="w-4 h-4 text-zinc-500" />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Exchange</th>
+                  <th>Price</th>
+                  <th>Change</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stocks.slice(0, 15).map((stock, idx) => (
+                  <tr key={`${stock.symbol}-${stock.exchange}-${idx}`}>
+                    <td className="font-medium">{stock.symbol}</td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          stock.exchange === "NSE"
+                            ? "badge-blue"
+                            : "badge-yellow"
+                        }`}
+                      >
+                        {stock.exchange}
+                      </span>
+                    </td>
+                    <td>{formatPrice(stock.price)}</td>
+                    <td
+                      className={
+                        stock.change_pct >= 0 ? "price-up" : "price-down"
+                      }
+                    >
+                      {formatChange(stock.change_pct)}
+                    </td>
+                    <td>{stock.volume?.toLocaleString("en-IN") || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Arbitrage Opportunities */}
+        <div className="card" data-testid="arbitrage-opps">
+          <div className="card-header">
+            <span className="card-title">Arbitrage Opportunities</span>
+            <span className="badge badge-green">Live</span>
+          </div>
+          {arbitrageOpps.length > 0 ? (
+            <div className="space-y-3">
+              {arbitrageOpps.map((opp, idx) => (
+                <div
+                  key={idx}
+                  className="p-3 bg-zinc-900 rounded-lg border border-zinc-800"
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="font-medium">{opp.symbol}</span>
+                    <span className="badge badge-green">
+                      {opp.spread_pct?.toFixed(2)}%
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-zinc-500">NSE:</span>
+                      <span className="ml-2 font-mono">
+                        {formatPrice(opp.nse_price)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500">BSE:</span>
+                      <span className="ml-2 font-mono">
+                        {formatPrice(opp.bse_price)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-green-500">
+                    Net Profit: {formatPrice(opp.net_profit_per_share)}/share
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <p>No significant arbitrage opportunities detected</p>
+              <p className="text-xs mt-2">
+                Opportunities appear when spread &gt; 0.1%
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Charts Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+        {indices.slice(0, 2).map((index) => (
+          <div key={index.index} className="card" data-testid={`chart-${index.index}`}>
+            <div className="card-header">
+              <span className="card-title">{index.index} - Intraday</span>
+              <span
+                className={
+                  index.change >= 0 ? "text-green-500" : "text-red-500"
+                }
+              >
+                {formatChange(index.change_pct)}
+              </span>
+            </div>
+            <div className="h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={generateChartData(index.value || 20000)}>
+                  <defs>
+                    <linearGradient id={`gradient-${index.index}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop
+                        offset="5%"
+                        stopColor={index.change >= 0 ? "#22c55e" : "#ef4444"}
+                        stopOpacity={0.3}
+                      />
+                      <stop
+                        offset="95%"
+                        stopColor={index.change >= 0 ? "#22c55e" : "#ef4444"}
+                        stopOpacity={0}
+                      />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="time"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "#71717a", fontSize: 10 }}
+                  />
+                  <YAxis
+                    domain={["auto", "auto"]}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "#71717a", fontSize: 10 }}
+                    tickFormatter={(v) => v.toLocaleString()}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "#1a1a1a",
+                      border: "1px solid #262626",
+                      borderRadius: "8px",
+                    }}
+                    labelStyle={{ color: "#a1a1aa" }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="value"
+                    stroke={index.change >= 0 ? "#22c55e" : "#ef4444"}
+                    fill={`url(#gradient-${index.index})`}
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Quick Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+        <div className="stat-card" data-testid="stat-total-opps">
+          <div className="stat-label">Active Opportunities</div>
+          <div className="stat-value text-green-500">{arbitrageOpps.length}</div>
+        </div>
+        <div className="stat-card" data-testid="stat-symbols">
+          <div className="stat-label">Symbols Tracked</div>
+          <div className="stat-value">{stocks.length}</div>
+        </div>
+        <div className="stat-card" data-testid="stat-indices">
+          <div className="stat-label">Indices</div>
+          <div className="stat-value">{indices.length}</div>
+        </div>
+        <div className="stat-card" data-testid="stat-market-status">
+          <div className="stat-label">Market Status</div>
+          <div className="stat-value text-green-500">OPEN</div>
+        </div>
+      </div>
+    </div>
+  );
+}
