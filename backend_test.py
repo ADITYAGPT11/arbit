@@ -150,23 +150,18 @@ class ArbitragePlatformTester:
         print("="*50)
         
         # Performance metrics
-        returns_data = {
-            "returns": [0.01, -0.005, 0.02, 0.015, -0.01, 0.008, 0.012, -0.003, 0.009, 0.006],
-            "risk_free_rate": 7.0
-        }
-        self.run_test("Performance Metrics", "POST", "analytics/performance", 200, returns_data)
+        returns_data = [0.01, -0.005, 0.02, 0.015, -0.01, 0.008, 0.012, -0.003, 0.009, 0.006]
+        self.run_test("Performance Metrics", "POST", "analytics/performance", 200, returns_data, send_as_list=True)
         
         # Weekday performance
-        trades_data = {
-            "trades": [
-                {"date": "2024-01-15T10:00:00Z", "pnl": 150},
-                {"date": "2024-01-16T10:00:00Z", "pnl": -50},
-                {"date": "2024-01-17T10:00:00Z", "pnl": 200},
-                {"date": "2024-01-18T10:00:00Z", "pnl": 75},
-                {"date": "2024-01-19T10:00:00Z", "pnl": -25}
-            ]
-        }
-        self.run_test("Weekday Performance", "POST", "analytics/weekday", 200, trades_data)
+        trades_data = [
+            {"date": "2024-01-15T10:00:00Z", "pnl": 150},
+            {"date": "2024-01-16T10:00:00Z", "pnl": -50},
+            {"date": "2024-01-17T10:00:00Z", "pnl": 200},
+            {"date": "2024-01-18T10:00:00Z", "pnl": 75},
+            {"date": "2024-01-19T10:00:00Z", "pnl": -25}
+        ]
+        self.run_test("Weekday Performance", "POST", "analytics/weekday", 200, trades_data, send_as_list=True)
 
     def test_risk_management_endpoints(self):
         """Test risk management endpoints"""
