@@ -1,15 +1,20 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
-
+from datetime import datetime, timezone, timedelta
+import httpx
+import asyncio
+import json
+import numpy as np
+from scipy import stats
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -19,70 +24,1102 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
-app = FastAPI()
+# Create the main app
+app = FastAPI(title="Indian Markets Arbitrage Platform")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
+# ==================== MODELS ====================
+
+class User(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class UserSession(BaseModel):
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    session_token: str
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class WatchlistItem(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
+    user_id: str
+    symbol: str
+    exchange: str  # NSE or BSE
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class Alert(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    alert_type: str  # arbitrage, spread, price
+    symbol: Optional[str] = None
+    threshold: float
+    telegram_chat_id: Optional[str] = None
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class BacktestRequest(BaseModel):
+    strategy: str
+    symbol: str
+    start_date: str
+    end_date: str
+    initial_capital: float = 1000000
+    
+class ArbitrageOpportunity(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: str
+    symbol: str
+    nse_price: Optional[float] = None
+    bse_price: Optional[float] = None
+    futures_price: Optional[float] = None
+    spot_price: Optional[float] = None
+    spread_pct: float
+    net_profit: float
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+# ==================== MARKET DATA SERVICE ====================
 
-# Add your routes to the router instead of directly to app
+class MarketDataService:
+    """Service to fetch real-time market data from free APIs"""
+    
+    BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+    NSE_INDICES = {
+        "NIFTY": "^NSEI",
+        "BANKNIFTY": "^NSEBANK",
+        "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+        "SENSEX": "^BSESN",
+        "BANKEX": "BSE-BANK.BO"
+    }
+    
+    # Popular F&O stocks
+    FO_STOCKS = [
+        "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", 
+        "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK",
+        "ASIANPAINT", "MARUTI", "TITAN", "BAJFINANCE", "WIPRO", "HCLTECH",
+        "SUNPHARMA", "ULTRACEMCO", "TATASTEEL", "POWERGRID", "NTPC", "ONGC"
+    ]
+    
+    @staticmethod
+    async def get_stock_price(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
+        """Fetch stock price from Yahoo Finance"""
+        suffix = ".NS" if exchange == "NSE" else ".BO"
+        yahoo_symbol = f"{symbol}{suffix}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{MarketDataService.BASE_URL}/{yahoo_symbol}",
+                    params={"interval": "1m", "range": "1d"}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    result = data.get("chart", {}).get("result", [])
+                    if result:
+                        meta = result[0].get("meta", {})
+                        quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                        timestamps = result[0].get("timestamp", [])
+                        
+                        return {
+                            "symbol": symbol,
+                            "exchange": exchange,
+                            "price": meta.get("regularMarketPrice", 0),
+                            "prev_close": meta.get("previousClose", 0),
+                            "open": quote.get("open", [0])[-1] if quote.get("open") else 0,
+                            "high": max(quote.get("high", [0])) if quote.get("high") else 0,
+                            "low": min([x for x in quote.get("low", [0]) if x]) if quote.get("low") else 0,
+                            "volume": sum(quote.get("volume", [0])) if quote.get("volume") else 0,
+                            "change": meta.get("regularMarketPrice", 0) - meta.get("previousClose", 0),
+                            "change_pct": ((meta.get("regularMarketPrice", 0) - meta.get("previousClose", 0)) / meta.get("previousClose", 1)) * 100 if meta.get("previousClose") else 0,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+        except Exception as e:
+            logger.error(f"Error fetching {symbol}: {e}")
+        
+        return {"symbol": symbol, "exchange": exchange, "price": 0, "error": "Failed to fetch"}
+    
+    @staticmethod
+    async def get_index_data(index_name: str) -> Dict[str, Any]:
+        """Fetch index data"""
+        yahoo_symbol = MarketDataService.NSE_INDICES.get(index_name, f"^{index_name}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{MarketDataService.BASE_URL}/{yahoo_symbol}",
+                    params={"interval": "1m", "range": "1d"}
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    result = data.get("chart", {}).get("result", [])
+                    if result:
+                        meta = result[0].get("meta", {})
+                        return {
+                            "index": index_name,
+                            "value": meta.get("regularMarketPrice", 0),
+                            "prev_close": meta.get("previousClose", 0),
+                            "change": meta.get("regularMarketPrice", 0) - meta.get("previousClose", 0),
+                            "change_pct": ((meta.get("regularMarketPrice", 0) - meta.get("previousClose", 0)) / meta.get("previousClose", 1)) * 100 if meta.get("previousClose") else 0,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+        except Exception as e:
+            logger.error(f"Error fetching index {index_name}: {e}")
+        
+        return {"index": index_name, "value": 0, "error": "Failed to fetch"}
+    
+    @staticmethod
+    async def get_multiple_stocks(symbols: List[str]) -> List[Dict[str, Any]]:
+        """Fetch multiple stocks in parallel"""
+        tasks = []
+        for symbol in symbols:
+            tasks.append(MarketDataService.get_stock_price(symbol, "NSE"))
+            tasks.append(MarketDataService.get_stock_price(symbol, "BSE"))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return [r for r in results if isinstance(r, dict) and not r.get("error")]
+
+# ==================== ARBITRAGE ENGINE ====================
+
+class ArbitrageEngine:
+    """Engine to detect various arbitrage opportunities"""
+    
+    # Transaction costs for Indian markets
+    BROKERAGE_PCT = 0.03  # 0.03%
+    STT_DELIVERY = 0.1    # 0.1% on delivery
+    STT_INTRADAY = 0.025  # 0.025% on intraday
+    STAMP_DUTY = 0.015    # 0.015%
+    GST = 18              # 18% on brokerage
+    SEBI_CHARGES = 0.0001 # 0.0001%
+    
+    @staticmethod
+    def calculate_transaction_cost(value: float, is_delivery: bool = True) -> float:
+        """Calculate total transaction cost"""
+        brokerage = value * ArbitrageEngine.BROKERAGE_PCT / 100
+        stt = value * (ArbitrageEngine.STT_DELIVERY if is_delivery else ArbitrageEngine.STT_INTRADAY) / 100
+        stamp = value * ArbitrageEngine.STAMP_DUTY / 100
+        gst = brokerage * ArbitrageEngine.GST / 100
+        sebi = value * ArbitrageEngine.SEBI_CHARGES / 100
+        return brokerage + stt + stamp + gst + sebi
+    
+    @staticmethod
+    async def detect_cross_exchange_arbitrage(symbols: List[str]) -> List[Dict[str, Any]]:
+        """Detect NSE vs BSE price differences"""
+        opportunities = []
+        
+        for symbol in symbols:
+            nse_data = await MarketDataService.get_stock_price(symbol, "NSE")
+            bse_data = await MarketDataService.get_stock_price(symbol, "BSE")
+            
+            nse_price = nse_data.get("price", 0)
+            bse_price = bse_data.get("price", 0)
+            
+            if nse_price > 0 and bse_price > 0:
+                spread = abs(nse_price - bse_price)
+                spread_pct = (spread / min(nse_price, bse_price)) * 100
+                
+                # Calculate net profit after costs
+                buy_exchange = "BSE" if bse_price < nse_price else "NSE"
+                buy_price = min(nse_price, bse_price)
+                sell_price = max(nse_price, bse_price)
+                
+                buy_cost = ArbitrageEngine.calculate_transaction_cost(buy_price, False)
+                sell_cost = ArbitrageEngine.calculate_transaction_cost(sell_price, False)
+                
+                net_profit = spread - buy_cost - sell_cost
+                net_profit_pct = (net_profit / buy_price) * 100
+                
+                if spread_pct > 0.1:  # Only show if spread > 0.1%
+                    opportunities.append({
+                        "type": "cross_exchange",
+                        "symbol": symbol,
+                        "nse_price": round(nse_price, 2),
+                        "bse_price": round(bse_price, 2),
+                        "spread": round(spread, 2),
+                        "spread_pct": round(spread_pct, 3),
+                        "buy_exchange": buy_exchange,
+                        "sell_exchange": "NSE" if buy_exchange == "BSE" else "BSE",
+                        "net_profit_per_share": round(net_profit, 2),
+                        "net_profit_pct": round(net_profit_pct, 3),
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+        
+        return sorted(opportunities, key=lambda x: x["spread_pct"], reverse=True)
+    
+    @staticmethod
+    def calculate_cash_carry_arbitrage(spot_price: float, futures_price: float, 
+                                        days_to_expiry: int, risk_free_rate: float = 7.0) -> Dict[str, Any]:
+        """Calculate cash and carry arbitrage opportunity"""
+        if spot_price <= 0 or futures_price <= 0 or days_to_expiry <= 0:
+            return {"error": "Invalid input"}
+        
+        # Fair value of futures
+        fair_value = spot_price * (1 + (risk_free_rate / 100) * (days_to_expiry / 365))
+        
+        # Basis
+        basis = futures_price - spot_price
+        basis_pct = (basis / spot_price) * 100
+        
+        # Annualized basis
+        annualized_basis = (basis_pct / days_to_expiry) * 365
+        
+        # Mispricing
+        mispricing = futures_price - fair_value
+        mispricing_pct = (mispricing / fair_value) * 100
+        
+        # Transaction costs (buy spot + sell futures)
+        total_cost = ArbitrageEngine.calculate_transaction_cost(spot_price, True) + \
+                     ArbitrageEngine.calculate_transaction_cost(futures_price, False)
+        
+        # Net profit
+        net_profit = basis - total_cost
+        net_profit_pct = (net_profit / spot_price) * 100
+        annualized_return = (net_profit_pct / days_to_expiry) * 365
+        
+        return {
+            "spot_price": round(spot_price, 2),
+            "futures_price": round(futures_price, 2),
+            "fair_value": round(fair_value, 2),
+            "basis": round(basis, 2),
+            "basis_pct": round(basis_pct, 3),
+            "annualized_basis": round(annualized_basis, 2),
+            "mispricing": round(mispricing, 2),
+            "mispricing_pct": round(mispricing_pct, 3),
+            "days_to_expiry": days_to_expiry,
+            "transaction_cost": round(total_cost, 2),
+            "net_profit": round(net_profit, 2),
+            "net_profit_pct": round(net_profit_pct, 3),
+            "annualized_return": round(annualized_return, 2),
+            "is_profitable": net_profit > 0,
+            "strategy": "Buy Spot + Sell Futures" if futures_price > fair_value else "Sell Spot + Buy Futures"
+        }
+    
+    @staticmethod
+    def calculate_synthetic_futures_arbitrage(spot_price: float, call_price: float, 
+                                               put_price: float, strike: float,
+                                               futures_price: float) -> Dict[str, Any]:
+        """Calculate synthetic futures vs actual futures arbitrage"""
+        # Synthetic Future = Call - Put + Strike (using put-call parity)
+        synthetic_future = call_price - put_price + strike
+        
+        # Mispricing
+        mispricing = futures_price - synthetic_future
+        mispricing_pct = (mispricing / synthetic_future) * 100 if synthetic_future > 0 else 0
+        
+        # Transaction costs (4 legs: buy call, sell put, and futures)
+        total_cost = ArbitrageEngine.calculate_transaction_cost(call_price + put_price + futures_price, False)
+        
+        net_profit = abs(mispricing) - total_cost
+        
+        return {
+            "spot_price": round(spot_price, 2),
+            "call_price": round(call_price, 2),
+            "put_price": round(put_price, 2),
+            "strike": round(strike, 2),
+            "synthetic_future": round(synthetic_future, 2),
+            "actual_future": round(futures_price, 2),
+            "mispricing": round(mispricing, 2),
+            "mispricing_pct": round(mispricing_pct, 3),
+            "transaction_cost": round(total_cost, 2),
+            "net_profit": round(net_profit, 2),
+            "is_profitable": net_profit > 0,
+            "strategy": "Buy Synthetic + Sell Futures" if futures_price > synthetic_future else "Sell Synthetic + Buy Futures"
+        }
+    
+    @staticmethod
+    def calculate_calendar_spread(near_futures: float, far_futures: float,
+                                   near_expiry_days: int, far_expiry_days: int) -> Dict[str, Any]:
+        """Calculate calendar spread arbitrage"""
+        spread = far_futures - near_futures
+        spread_pct = (spread / near_futures) * 100 if near_futures > 0 else 0
+        
+        # Annualized spread
+        days_diff = far_expiry_days - near_expiry_days
+        annualized_spread = (spread_pct / days_diff) * 365 if days_diff > 0 else 0
+        
+        return {
+            "near_futures": round(near_futures, 2),
+            "far_futures": round(far_futures, 2),
+            "spread": round(spread, 2),
+            "spread_pct": round(spread_pct, 3),
+            "near_expiry_days": near_expiry_days,
+            "far_expiry_days": far_expiry_days,
+            "annualized_spread": round(annualized_spread, 2),
+            "strategy": "Buy Near + Sell Far" if spread > 0 else "Sell Near + Buy Far"
+        }
+    
+    @staticmethod
+    def calculate_statistical_arbitrage(prices1: List[float], prices2: List[float],
+                                         lookback: int = 20) -> Dict[str, Any]:
+        """Calculate statistical arbitrage (pairs trading) signals"""
+        if len(prices1) < lookback or len(prices2) < lookback:
+            return {"error": "Insufficient data"}
+        
+        prices1 = np.array(prices1[-lookback:])
+        prices2 = np.array(prices2[-lookback:])
+        
+        # Calculate spread ratio
+        ratio = prices1 / prices2
+        
+        # Z-score
+        mean_ratio = np.mean(ratio)
+        std_ratio = np.std(ratio)
+        current_ratio = ratio[-1]
+        z_score = (current_ratio - mean_ratio) / std_ratio if std_ratio > 0 else 0
+        
+        # Correlation
+        correlation = np.corrcoef(prices1, prices2)[0, 1]
+        
+        # Half-life (mean reversion speed)
+        spread = prices1 - prices2 * mean_ratio
+        spread_lag = np.roll(spread, 1)[1:]
+        spread_diff = np.diff(spread)
+        
+        try:
+            slope, _, _, _, _ = stats.linregress(spread_lag, spread_diff)
+            half_life = -np.log(2) / slope if slope < 0 else float('inf')
+        except:
+            half_life = float('inf')
+        
+        # Generate signal
+        signal = "NEUTRAL"
+        if z_score > 2:
+            signal = "SHORT_SPREAD"  # Sell stock1, Buy stock2
+        elif z_score < -2:
+            signal = "LONG_SPREAD"   # Buy stock1, Sell stock2
+        elif abs(z_score) < 0.5:
+            signal = "EXIT"
+        
+        return {
+            "current_ratio": round(current_ratio, 4),
+            "mean_ratio": round(mean_ratio, 4),
+            "z_score": round(z_score, 2),
+            "correlation": round(correlation, 3),
+            "half_life": round(half_life, 1) if half_life != float('inf') else "N/A",
+            "signal": signal,
+            "lookback": lookback
+        }
+
+# ==================== PERFORMANCE ANALYTICS ====================
+
+class PerformanceAnalytics:
+    """Calculate trading performance metrics"""
+    
+    @staticmethod
+    def calculate_metrics(returns: List[float], risk_free_rate: float = 7.0) -> Dict[str, Any]:
+        """Calculate comprehensive performance metrics"""
+        if not returns or len(returns) < 2:
+            return {"error": "Insufficient data"}
+        
+        returns = np.array(returns)
+        
+        # Basic metrics
+        total_return = (np.prod(1 + returns) - 1) * 100
+        avg_return = np.mean(returns) * 100
+        volatility = np.std(returns) * np.sqrt(252) * 100  # Annualized
+        
+        # Risk-adjusted metrics
+        excess_returns = returns - (risk_free_rate / 100 / 252)
+        sharpe_ratio = np.mean(excess_returns) / np.std(returns) * np.sqrt(252) if np.std(returns) > 0 else 0
+        
+        # Sortino ratio (downside deviation)
+        downside_returns = returns[returns < 0]
+        downside_std = np.std(downside_returns) * np.sqrt(252) if len(downside_returns) > 0 else 0
+        sortino_ratio = np.mean(excess_returns) * 252 / downside_std if downside_std > 0 else 0
+        
+        # Drawdown
+        cumulative = np.cumprod(1 + returns)
+        running_max = np.maximum.accumulate(cumulative)
+        drawdowns = (cumulative - running_max) / running_max
+        max_drawdown = np.min(drawdowns) * 100
+        
+        # Calmar ratio
+        calmar_ratio = (total_return / 100) / abs(max_drawdown / 100) if max_drawdown != 0 else 0
+        
+        # Win rate
+        winning_days = np.sum(returns > 0)
+        total_days = len(returns)
+        win_rate = (winning_days / total_days) * 100
+        
+        # Profit factor
+        gross_profit = np.sum(returns[returns > 0])
+        gross_loss = abs(np.sum(returns[returns < 0]))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        
+        return {
+            "total_return": round(total_return, 2),
+            "avg_daily_return": round(avg_return, 3),
+            "volatility": round(volatility, 2),
+            "sharpe_ratio": round(sharpe_ratio, 2),
+            "sortino_ratio": round(sortino_ratio, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "calmar_ratio": round(calmar_ratio, 2),
+            "win_rate": round(win_rate, 1),
+            "profit_factor": round(profit_factor, 2) if profit_factor != float('inf') else "N/A",
+            "total_trades": total_days
+        }
+    
+    @staticmethod
+    def calculate_weekday_performance(trades: List[Dict]) -> Dict[str, Any]:
+        """Analyze performance by weekday"""
+        weekday_pnl = {i: [] for i in range(5)}  # Mon=0, Fri=4
+        
+        for trade in trades:
+            if "date" in trade and "pnl" in trade:
+                try:
+                    date = datetime.fromisoformat(trade["date"].replace("Z", "+00:00"))
+                    weekday = date.weekday()
+                    if weekday < 5:  # Only weekdays
+                        weekday_pnl[weekday].append(trade["pnl"])
+                except:
+                    pass
+        
+        weekday_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        result = {}
+        
+        for i, name in enumerate(weekday_names):
+            pnls = weekday_pnl[i]
+            if pnls:
+                result[name] = {
+                    "total_pnl": round(sum(pnls), 2),
+                    "avg_pnl": round(np.mean(pnls), 2),
+                    "trade_count": len(pnls),
+                    "win_rate": round(sum(1 for p in pnls if p > 0) / len(pnls) * 100, 1)
+                }
+            else:
+                result[name] = {"total_pnl": 0, "avg_pnl": 0, "trade_count": 0, "win_rate": 0}
+        
+        return result
+
+# ==================== RISK MANAGEMENT ====================
+
+class RiskManager:
+    """Risk management calculations"""
+    
+    @staticmethod
+    def calculate_position_size(capital: float, risk_per_trade: float, 
+                                 stop_loss_pct: float, price: float) -> Dict[str, Any]:
+        """Calculate position size based on risk"""
+        risk_amount = capital * (risk_per_trade / 100)
+        stop_loss_amount = price * (stop_loss_pct / 100)
+        
+        shares = int(risk_amount / stop_loss_amount) if stop_loss_amount > 0 else 0
+        position_value = shares * price
+        
+        return {
+            "capital": capital,
+            "risk_per_trade_pct": risk_per_trade,
+            "risk_amount": round(risk_amount, 2),
+            "stop_loss_pct": stop_loss_pct,
+            "price": price,
+            "recommended_shares": shares,
+            "position_value": round(position_value, 2),
+            "capital_utilization_pct": round((position_value / capital) * 100, 1)
+        }
+    
+    @staticmethod
+    def calculate_var(returns: List[float], confidence: float = 0.95, 
+                      portfolio_value: float = 1000000) -> Dict[str, Any]:
+        """Calculate Value at Risk"""
+        if not returns:
+            return {"error": "No returns data"}
+        
+        returns = np.array(returns)
+        
+        # Historical VaR
+        var_pct = np.percentile(returns, (1 - confidence) * 100)
+        var_amount = abs(var_pct * portfolio_value)
+        
+        # Parametric VaR (assuming normal distribution)
+        mean = np.mean(returns)
+        std = np.std(returns)
+        z_score = stats.norm.ppf(1 - confidence)
+        parametric_var_pct = mean + z_score * std
+        parametric_var_amount = abs(parametric_var_pct * portfolio_value)
+        
+        return {
+            "confidence_level": confidence * 100,
+            "historical_var_pct": round(var_pct * 100, 2),
+            "historical_var_amount": round(var_amount, 2),
+            "parametric_var_pct": round(parametric_var_pct * 100, 2),
+            "parametric_var_amount": round(parametric_var_amount, 2),
+            "portfolio_value": portfolio_value
+        }
+    
+    @staticmethod
+    def calculate_margin_requirement(position_value: float, 
+                                      volatility: float = 15,
+                                      is_futures: bool = True) -> Dict[str, Any]:
+        """Calculate SPAN margin requirement (simplified)"""
+        # Simplified SPAN margin calculation
+        if is_futures:
+            span_margin_pct = max(10, volatility * 1.5)  # Minimum 10%
+            exposure_margin_pct = 3.5
+        else:
+            span_margin_pct = max(15, volatility * 2)
+            exposure_margin_pct = 5
+        
+        span_margin = position_value * (span_margin_pct / 100)
+        exposure_margin = position_value * (exposure_margin_pct / 100)
+        total_margin = span_margin + exposure_margin
+        
+        return {
+            "position_value": position_value,
+            "volatility": volatility,
+            "span_margin_pct": round(span_margin_pct, 2),
+            "span_margin": round(span_margin, 2),
+            "exposure_margin_pct": round(exposure_margin_pct, 2),
+            "exposure_margin": round(exposure_margin, 2),
+            "total_margin": round(total_margin, 2),
+            "leverage": round(position_value / total_margin, 1) if total_margin > 0 else 0
+        }
+
+# ==================== TELEGRAM ALERTS ====================
+
+class TelegramService:
+    """Send alerts via Telegram"""
+    
+    @staticmethod
+    async def send_alert(chat_id: str, message: str, bot_token: str) -> bool:
+        """Send Telegram message"""
+        if not bot_token or not chat_id:
+            logger.warning("Telegram not configured")
+            return False
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": message,
+                        "parse_mode": "HTML"
+                    }
+                )
+                return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Telegram error: {e}")
+            return False
+    
+    @staticmethod
+    def format_arbitrage_alert(opportunity: Dict) -> str:
+        """Format arbitrage opportunity as Telegram message"""
+        return f"""
+🚨 <b>Arbitrage Alert!</b>
+
+<b>Type:</b> {opportunity.get('type', 'Unknown')}
+<b>Symbol:</b> {opportunity.get('symbol', 'N/A')}
+<b>Spread:</b> {opportunity.get('spread_pct', 0):.2f}%
+<b>Net Profit:</b> ₹{opportunity.get('net_profit_per_share', 0):.2f}/share
+
+<b>Action:</b>
+Buy on {opportunity.get('buy_exchange', 'N/A')} @ ₹{opportunity.get('nse_price' if opportunity.get('buy_exchange') == 'NSE' else 'bse_price', 0):.2f}
+Sell on {opportunity.get('sell_exchange', 'N/A')} @ ₹{opportunity.get('bse_price' if opportunity.get('buy_exchange') == 'NSE' else 'nse_price', 0):.2f}
+
+⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC
+"""
+
+# ==================== BACKTESTING ====================
+
+class BacktestEngine:
+    """Simple backtesting engine"""
+    
+    @staticmethod
+    async def run_backtest(strategy: str, symbol: str, 
+                           start_date: str, end_date: str,
+                           initial_capital: float = 1000000) -> Dict[str, Any]:
+        """Run a simple backtest simulation"""
+        # Generate simulated historical data (in production, use actual historical data)
+        np.random.seed(42)
+        days = 252  # 1 year of trading days
+        
+        # Simulate daily returns
+        if strategy == "cross_exchange":
+            # Cross-exchange arbitrage typically has small but consistent returns
+            daily_returns = np.random.normal(0.0005, 0.002, days)
+        elif strategy == "cash_carry":
+            # Cash and carry has more predictable returns
+            daily_returns = np.random.normal(0.0003, 0.001, days)
+        elif strategy == "statistical":
+            # Statistical arbitrage has higher variance
+            daily_returns = np.random.normal(0.0008, 0.005, days)
+        else:
+            daily_returns = np.random.normal(0.0004, 0.003, days)
+        
+        # Calculate equity curve
+        equity = [initial_capital]
+        for ret in daily_returns:
+            equity.append(equity[-1] * (1 + ret))
+        
+        # Calculate metrics
+        metrics = PerformanceAnalytics.calculate_metrics(daily_returns.tolist())
+        
+        # Generate trade log
+        trades = []
+        for i in range(min(50, days)):
+            date = datetime.now(timezone.utc) - timedelta(days=days-i)
+            trades.append({
+                "date": date.isoformat(),
+                "symbol": symbol,
+                "action": "BUY" if daily_returns[i] > 0 else "SELL",
+                "price": round(1000 * (1 + np.sum(daily_returns[:i]) * 0.1), 2),
+                "quantity": 100,
+                "pnl": round(initial_capital * daily_returns[i], 2)
+            })
+        
+        return {
+            "strategy": strategy,
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date,
+            "initial_capital": initial_capital,
+            "final_capital": round(equity[-1], 2),
+            "total_return_pct": round((equity[-1] / initial_capital - 1) * 100, 2),
+            "metrics": metrics,
+            "equity_curve": [round(e, 2) for e in equity[::5]],  # Sample every 5 days
+            "trades": trades[-20:],  # Last 20 trades
+            "total_trades": len(trades)
+        }
+
+# ==================== AUTH HELPERS ====================
+
+async def get_current_user(request: Request) -> Optional[User]:
+    """Get current user from session token"""
+    session_token = request.cookies.get("session_token")
+    
+    if not session_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            session_token = auth_header[7:]
+    
+    if not session_token:
+        return None
+    
+    session = await db.user_sessions.find_one(
+        {"session_token": session_token},
+        {"_id": 0}
+    )
+    
+    if not session:
+        return None
+    
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    
+    if expires_at < datetime.now(timezone.utc):
+        return None
+    
+    user = await db.users.find_one(
+        {"user_id": session["user_id"]},
+        {"_id": 0}
+    )
+    
+    return User(**user) if user else None
+
+async def require_auth(request: Request) -> User:
+    """Require authentication"""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+# ==================== API ROUTES ====================
+
+# Health check
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Indian Markets Arbitrage Platform API", "version": "1.0.0"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+@api_router.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+# ==================== AUTH ROUTES ====================
 
-# Include the router in the main app
+@api_router.post("/auth/session")
+async def create_session(request: Request):
+    """Exchange session_id for session_token (Emergent Auth)"""
+    try:
+        body = await request.json()
+        session_id = body.get("session_id")
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id required")
+        
+        # Call Emergent Auth to get user data
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": session_id}
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid session")
+            
+            auth_data = response.json()
+        
+        # Create or update user
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        existing_user = await db.users.find_one({"email": auth_data["email"]}, {"_id": 0})
+        
+        if existing_user:
+            user_id = existing_user["user_id"]
+        else:
+            await db.users.insert_one({
+                "user_id": user_id,
+                "email": auth_data["email"],
+                "name": auth_data["name"],
+                "picture": auth_data.get("picture"),
+                "created_at": datetime.now(timezone.utc).isoformat()
+            })
+        
+        # Create session
+        session_token = auth_data.get("session_token", str(uuid.uuid4()))
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        
+        await db.user_sessions.insert_one({
+            "user_id": user_id,
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        # Set cookie
+        response = JSONResponse({
+            "user_id": user_id,
+            "email": auth_data["email"],
+            "name": auth_data["name"],
+            "picture": auth_data.get("picture")
+        })
+        
+        response.set_cookie(
+            key="session_token",
+            value=session_token,
+            httponly=True,
+            secure=True,
+            samesite="none",
+            max_age=7 * 24 * 60 * 60,
+            path="/"
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=500, detail="Authentication failed")
+
+@api_router.get("/auth/me")
+async def get_me(request: Request):
+    """Get current user"""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    return {
+        "user_id": user.user_id,
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture
+    }
+
+@api_router.post("/auth/logout")
+async def logout(request: Request):
+    """Logout user"""
+    session_token = request.cookies.get("session_token")
+    if session_token:
+        await db.user_sessions.delete_one({"session_token": session_token})
+    
+    response = JSONResponse({"message": "Logged out"})
+    response.delete_cookie("session_token", path="/")
+    return response
+
+# ==================== MARKET DATA ROUTES ====================
+
+@api_router.get("/market/indices")
+async def get_indices():
+    """Get major Indian indices"""
+    indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "BANKEX"]
+    tasks = [MarketDataService.get_index_data(idx) for idx in indices]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return [r for r in results if isinstance(r, dict)]
+
+@api_router.get("/market/stock/{symbol}")
+async def get_stock(symbol: str, exchange: str = "NSE"):
+    """Get stock price"""
+    return await MarketDataService.get_stock_price(symbol.upper(), exchange.upper())
+
+@api_router.get("/market/stocks")
+async def get_stocks(symbols: str = None):
+    """Get multiple stock prices"""
+    if symbols:
+        symbol_list = [s.strip().upper() for s in symbols.split(",")]
+    else:
+        symbol_list = MarketDataService.FO_STOCKS[:10]
+    
+    return await MarketDataService.get_multiple_stocks(symbol_list)
+
+@api_router.get("/market/fo-stocks")
+async def get_fo_stocks():
+    """Get list of F&O stocks"""
+    return {"stocks": MarketDataService.FO_STOCKS}
+
+# ==================== ARBITRAGE ROUTES ====================
+
+@api_router.get("/arbitrage/cross-exchange")
+async def get_cross_exchange_arbitrage(symbols: str = None):
+    """Detect cross-exchange arbitrage opportunities"""
+    if symbols:
+        symbol_list = [s.strip().upper() for s in symbols.split(",")]
+    else:
+        symbol_list = MarketDataService.FO_STOCKS[:15]
+    
+    return await ArbitrageEngine.detect_cross_exchange_arbitrage(symbol_list)
+
+@api_router.post("/arbitrage/cash-carry")
+async def calculate_cash_carry(
+    spot_price: float,
+    futures_price: float,
+    days_to_expiry: int,
+    risk_free_rate: float = 7.0
+):
+    """Calculate cash and carry arbitrage"""
+    return ArbitrageEngine.calculate_cash_carry_arbitrage(
+        spot_price, futures_price, days_to_expiry, risk_free_rate
+    )
+
+@api_router.post("/arbitrage/synthetic")
+async def calculate_synthetic(
+    spot_price: float,
+    call_price: float,
+    put_price: float,
+    strike: float,
+    futures_price: float
+):
+    """Calculate synthetic futures arbitrage"""
+    return ArbitrageEngine.calculate_synthetic_futures_arbitrage(
+        spot_price, call_price, put_price, strike, futures_price
+    )
+
+@api_router.post("/arbitrage/calendar-spread")
+async def calculate_calendar_spread(
+    near_futures: float,
+    far_futures: float,
+    near_expiry_days: int,
+    far_expiry_days: int
+):
+    """Calculate calendar spread"""
+    return ArbitrageEngine.calculate_calendar_spread(
+        near_futures, far_futures, near_expiry_days, far_expiry_days
+    )
+
+@api_router.post("/arbitrage/statistical")
+async def calculate_statistical_arb(
+    prices1: List[float],
+    prices2: List[float],
+    lookback: int = 20
+):
+    """Calculate statistical arbitrage signals"""
+    return ArbitrageEngine.calculate_statistical_arbitrage(prices1, prices2, lookback)
+
+# ==================== ANALYTICS ROUTES ====================
+
+@api_router.post("/analytics/performance")
+async def get_performance_metrics(returns: List[float], risk_free_rate: float = 7.0):
+    """Calculate performance metrics"""
+    return PerformanceAnalytics.calculate_metrics(returns, risk_free_rate)
+
+@api_router.post("/analytics/weekday")
+async def get_weekday_performance(trades: List[Dict]):
+    """Analyze performance by weekday"""
+    return PerformanceAnalytics.calculate_weekday_performance(trades)
+
+# ==================== RISK MANAGEMENT ROUTES ====================
+
+@api_router.post("/risk/position-size")
+async def calculate_position_size(
+    capital: float,
+    risk_per_trade: float,
+    stop_loss_pct: float,
+    price: float
+):
+    """Calculate position size"""
+    return RiskManager.calculate_position_size(capital, risk_per_trade, stop_loss_pct, price)
+
+@api_router.post("/risk/var")
+async def calculate_var(
+    returns: List[float],
+    confidence: float = 0.95,
+    portfolio_value: float = 1000000
+):
+    """Calculate Value at Risk"""
+    return RiskManager.calculate_var(returns, confidence, portfolio_value)
+
+@api_router.post("/risk/margin")
+async def calculate_margin(
+    position_value: float,
+    volatility: float = 15,
+    is_futures: bool = True
+):
+    """Calculate margin requirement"""
+    return RiskManager.calculate_margin_requirement(position_value, volatility, is_futures)
+
+# ==================== ALERT ROUTES ====================
+
+@api_router.post("/alerts")
+async def create_alert(alert: Alert, request: Request):
+    """Create a new alert"""
+    user = await require_auth(request)
+    alert.user_id = user.user_id
+    
+    alert_dict = alert.model_dump()
+    alert_dict["created_at"] = alert_dict["created_at"].isoformat()
+    await db.alerts.insert_one(alert_dict)
+    
+    return {"id": alert.id, "message": "Alert created"}
+
+@api_router.get("/alerts")
+async def get_alerts(request: Request):
+    """Get user's alerts"""
+    user = await require_auth(request)
+    alerts = await db.alerts.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).to_list(100)
+    return alerts
+
+@api_router.delete("/alerts/{alert_id}")
+async def delete_alert(alert_id: str, request: Request):
+    """Delete an alert"""
+    user = await require_auth(request)
+    result = await db.alerts.delete_one({"id": alert_id, "user_id": user.user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return {"message": "Alert deleted"}
+
+@api_router.post("/alerts/test")
+async def test_telegram_alert(chat_id: str, request: Request):
+    """Test Telegram alert"""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        raise HTTPException(status_code=400, detail="Telegram not configured")
+    
+    success = await TelegramService.send_alert(
+        chat_id,
+        "🔔 <b>Test Alert</b>\n\nYour Telegram alerts are configured correctly!",
+        bot_token
+    )
+    
+    return {"success": success}
+
+# ==================== BACKTEST ROUTES ====================
+
+@api_router.post("/backtest")
+async def run_backtest(request: BacktestRequest):
+    """Run backtest"""
+    return await BacktestEngine.run_backtest(
+        request.strategy,
+        request.symbol,
+        request.start_date,
+        request.end_date,
+        request.initial_capital
+    )
+
+# ==================== WATCHLIST ROUTES ====================
+
+@api_router.get("/watchlist")
+async def get_watchlist(request: Request):
+    """Get user's watchlist"""
+    user = await require_auth(request)
+    items = await db.watchlist.find(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    ).to_list(100)
+    return items
+
+@api_router.post("/watchlist")
+async def add_to_watchlist(item: WatchlistItem, request: Request):
+    """Add symbol to watchlist"""
+    user = await require_auth(request)
+    item.user_id = user.user_id
+    
+    # Check if already exists
+    existing = await db.watchlist.find_one({
+        "user_id": user.user_id,
+        "symbol": item.symbol,
+        "exchange": item.exchange
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Already in watchlist")
+    
+    item_dict = item.model_dump()
+    item_dict["created_at"] = item_dict["created_at"].isoformat()
+    await db.watchlist.insert_one(item_dict)
+    
+    return {"id": item.id, "message": "Added to watchlist"}
+
+@api_router.delete("/watchlist/{item_id}")
+async def remove_from_watchlist(item_id: str, request: Request):
+    """Remove from watchlist"""
+    user = await require_auth(request)
+    result = await db.watchlist.delete_one({"id": item_id, "user_id": user.user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"message": "Removed from watchlist"}
+
+# ==================== SETTINGS ROUTES ====================
+
+@api_router.get("/settings")
+async def get_settings(request: Request):
+    """Get user settings"""
+    user = await require_auth(request)
+    settings = await db.settings.find_one(
+        {"user_id": user.user_id},
+        {"_id": 0}
+    )
+    return settings or {
+        "user_id": user.user_id,
+        "telegram_chat_id": None,
+        "alert_threshold": 0.5,
+        "default_capital": 1000000,
+        "risk_per_trade": 2.0
+    }
+
+@api_router.put("/settings")
+async def update_settings(settings: Dict[str, Any], request: Request):
+    """Update user settings"""
+    user = await require_auth(request)
+    settings["user_id"] = user.user_id
+    
+    await db.settings.update_one(
+        {"user_id": user.user_id},
+        {"$set": settings},
+        upsert=True
+    )
+    return {"message": "Settings updated"}
+
+# Include router
 app.include_router(api_router)
 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
