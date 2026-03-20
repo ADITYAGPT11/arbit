@@ -35,7 +35,6 @@ const AuthProvider = ({ children }) => {
 
   const checkAuth = useCallback(async () => {
     // CRITICAL: If returning from OAuth callback, skip the /me check.
-    // AuthCallback will exchange the session_id and establish the session first.
     if (window.location.hash?.includes("session_id=")) {
       setLoading(false);
       return;
@@ -47,6 +46,7 @@ const AuthProvider = ({ children }) => {
       });
       setUser(response.data);
     } catch (error) {
+      // User not logged in - that's fine for public pages
       setUser(null);
     } finally {
       setLoading(false);
@@ -104,10 +104,10 @@ const AuthCallback = () => {
         } catch (error) {
           console.error("Auth error:", error);
           toast.error("Authentication failed");
-          navigate("/login", { replace: true });
+          navigate("/dashboard", { replace: true });
         }
       } else {
-        navigate("/login", { replace: true });
+        navigate("/dashboard", { replace: true });
       }
     };
 
@@ -121,10 +121,9 @@ const AuthCallback = () => {
   );
 };
 
-// Protected Route
+// Protected Route - Only for user-specific features (alerts, watchlist)
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
-  const location = useLocation();
 
   if (loading) {
     return (
@@ -135,13 +134,14 @@ const ProtectedRoute = ({ children }) => {
   }
 
   if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
+    toast.info("Please login to access this feature");
+    return <Navigate to="/dashboard" replace />;
   }
 
   return children;
 };
 
-// App Router
+// App Router - Most features are public, only alerts/watchlist need auth
 function AppRouter() {
   const location = useLocation();
 
@@ -153,14 +153,8 @@ function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <Layout />
-          </ProtectedRoute>
-        }
-      >
+      {/* All analysis features are public */}
+      <Route path="/" element={<Layout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="arbitrage" element={<ArbitrageScanner />} />
@@ -170,8 +164,9 @@ function AppRouter() {
         <Route path="statistical" element={<StatisticalArbitrage />} />
         <Route path="performance" element={<PerformanceAnalytics />} />
         <Route path="risk" element={<RiskManagement />} />
-        <Route path="alerts" element={<AlertsConfig />} />
         <Route path="backtest" element={<Backtesting />} />
+        {/* Only alerts require login (user-specific) */}
+        <Route path="alerts" element={<ProtectedRoute><AlertsConfig /></ProtectedRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
