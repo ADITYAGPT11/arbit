@@ -124,7 +124,7 @@ class MarketDataService:
     ]
     
     # Data source tracking
-    _use_live_data = True
+    _use_live_data = False  # Default to False - enable manually when market is open and API is accessible
     _last_api_error = None
     
     @staticmethod
@@ -150,25 +150,35 @@ class MarketDataService:
     
     @staticmethod
     async def get_stock_price(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
-        """Get stock price from Angel One API with fallback to simulated data"""
+        """Get stock price from Angel One API with fast fallback to simulated data"""
         
-        # Try Angel One API first (only if not in rate-limited state)
+        # Try Angel One API first (only if session is valid and configured)
         if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
             try:
                 angel = get_angel_service()
-                # Only try if session is valid (avoid login attempts on every call)
+                # Only try if session is already valid (don't wait for login)
                 if angel.auth_token:
-                    quote = angel.get_quote(symbol, exchange)
-                    
-                    if quote and quote.get('price', 0) > 0:
-                        quote['data_source'] = 'angel_one_live'
-                        return quote
+                    import asyncio
+                    # Use a very short timeout - if API is slow, use fallback
+                    try:
+                        quote = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, lambda: angel.get_quote(symbol, exchange)
+                            ),
+                            timeout=2.0  # 2 second timeout
+                        )
+                        
+                        if quote and quote.get('price', 0) > 0:
+                            quote['data_source'] = 'angel_one_live'
+                            return quote
+                    except asyncio.TimeoutError:
+                        logger.debug(f"Angel One API timeout for {symbol}, using fallback")
                     
             except Exception as e:
-                logger.warning(f"Angel One API error for {symbol}: {e}")
+                logger.debug(f"Angel One API error for {symbol}: {e}")
                 MarketDataService._last_api_error = str(e)
         
-        # Fallback to simulated data (this is the default until credentials are fixed)
+        # Fast fallback to simulated data
         base_price = MarketDataService.STOCK_BASE_PRICES.get(symbol, 1000)
         
         # Add small exchange-specific variation
@@ -194,23 +204,32 @@ class MarketDataService:
     
     @staticmethod
     async def get_index_data(index_name: str) -> Dict[str, Any]:
-        """Get index data from Angel One API with fallback"""
+        """Get index data from Angel One API with fast fallback"""
         
         # Try Angel One API first (only if session is valid)
         if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
             try:
                 angel = get_angel_service()
                 if angel.auth_token:
-                    quote = angel.get_index_quote(index_name)
-                    
-                    if quote and quote.get('value', 0) > 0:
-                        quote['data_source'] = 'angel_one_live'
-                        return quote
+                    import asyncio
+                    try:
+                        quote = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, lambda: angel.get_index_quote(index_name)
+                            ),
+                            timeout=2.0
+                        )
+                        
+                        if quote and quote.get('value', 0) > 0:
+                            quote['data_source'] = 'angel_one_live'
+                            return quote
+                    except asyncio.TimeoutError:
+                        logger.debug(f"Angel One API timeout for index {index_name}, using fallback")
                     
             except Exception as e:
-                logger.warning(f"Angel One API error for index {index_name}: {e}")
+                logger.debug(f"Angel One API error for index {index_name}: {e}")
         
-        # Fallback to simulated data
+        # Fast fallback to simulated data
         base_value = MarketDataService.INDEX_BASE_VALUES.get(index_name, 20000)
         price_data = MarketDataService._generate_fallback_price(base_value, 0.015)
         

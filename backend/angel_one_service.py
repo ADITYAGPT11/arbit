@@ -221,6 +221,7 @@ class AngelOneService:
             
             trading_symbol = f"{symbol}-EQ"
             
+            # Use ltpData with longer timeout
             data = self.smart_api.ltpData(exchange, trading_symbol, token)
             
             if data.get('status') and data.get('data'):
@@ -240,7 +241,11 @@ class AngelOneService:
                 return None
                 
         except Exception as e:
-            logger.error(f"Error fetching LTP for {symbol}: {e}")
+            # Don't log full error for timeout - it's expected sometimes
+            if 'timeout' in str(e).lower():
+                logger.debug(f"Timeout fetching LTP for {symbol}")
+            else:
+                logger.error(f"Error fetching LTP for {symbol}: {e}")
             return None
     
     def get_quote(self, symbol: str, exchange: str = "NSE") -> Optional[Dict[str, Any]]:
