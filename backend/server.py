@@ -88,25 +88,26 @@ class ArbitrageOpportunity(BaseModel):
 
 # ==================== MARKET DATA SERVICE ====================
 
+# Import Angel One Service
+try:
+    from angel_one_service import get_angel_service, SYMBOL_TOKENS
+    ANGEL_ONE_AVAILABLE = True
+except ImportError:
+    ANGEL_ONE_AVAILABLE = False
+    logger.warning("Angel One service not available, using simulated data")
+
+
 class MarketDataService:
-    """Service to fetch real-time market data - uses simulated data with realistic Indian market values"""
+    """Service to fetch real-time market data from Angel One SmartAPI with fallback to simulated data"""
     
-    BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
-    NSE_INDICES = {
-        "NIFTY": "^NSEI",
-        "BANKNIFTY": "^NSEBANK",
-        "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
-        "SENSEX": "^BSESN",
-        "BANKEX": "BSE-BANK.BO"
-    }
-    
-    # Realistic base prices for Indian stocks (approximate Jan 2026)
+    # Fallback base prices for Indian stocks (used when API fails)
     STOCK_BASE_PRICES = {
         "RELIANCE": 2850, "TCS": 3950, "HDFCBANK": 1720, "INFY": 1820, "ICICIBANK": 1280,
         "HINDUNILVR": 2450, "ITC": 485, "SBIN": 825, "BHARTIARTL": 1650, "KOTAKBANK": 1890,
         "LT": 3650, "AXISBANK": 1180, "ASIANPAINT": 2280, "MARUTI": 11200, "TITAN": 3520,
         "BAJFINANCE": 7450, "WIPRO": 295, "HCLTECH": 1920, "SUNPHARMA": 1850, "ULTRACEMCO": 11800,
-        "TATASTEEL": 155, "POWERGRID": 325, "NTPC": 385, "ONGC": 265
+        "TATASTEEL": 155, "POWERGRID": 325, "NTPC": 385, "ONGC": 265, "TATAMOTORS": 780,
+        "ADANIENT": 2400, "TECHM": 1650, "BAJAJFINSV": 1720, "INDUSINDBK": 1480, "JSWSTEEL": 920
     }
     
     INDEX_BASE_VALUES = {
@@ -118,14 +119,19 @@ class MarketDataService:
         "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "HINDUNILVR", 
         "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK",
         "ASIANPAINT", "MARUTI", "TITAN", "BAJFINANCE", "WIPRO", "HCLTECH",
-        "SUNPHARMA", "ULTRACEMCO", "TATASTEEL", "POWERGRID", "NTPC", "ONGC"
+        "SUNPHARMA", "ULTRACEMCO", "TATASTEEL", "POWERGRID", "NTPC", "ONGC",
+        "TATAMOTORS", "ADANIENT", "TECHM", "BAJAJFINSV", "INDUSINDBK", "JSWSTEEL"
     ]
     
+    # Data source tracking
+    _use_live_data = True
+    _last_api_error = None
+    
     @staticmethod
-    def _generate_realistic_price(base_price: float, volatility: float = 0.02) -> Dict[str, float]:
-        """Generate realistic price variation with small random movements"""
+    def _generate_fallback_price(base_price: float, volatility: float = 0.02) -> Dict[str, float]:
+        """Generate fallback simulated price when API fails"""
         import random
-        random.seed(int(datetime.now(timezone.utc).timestamp() / 60))  # Change every minute
+        random.seed(int(datetime.now(timezone.utc).timestamp() / 60))
         
         change_pct = (random.random() - 0.5) * volatility * 2
         price = base_price * (1 + change_pct)
@@ -144,14 +150,32 @@ class MarketDataService:
     
     @staticmethod
     async def get_stock_price(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
-        """Get stock price - uses simulated data for reliability"""
+        """Get stock price from Angel One API with fallback to simulated data"""
+        
+        # Try Angel One API first (only if not in rate-limited state)
+        if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
+            try:
+                angel = get_angel_service()
+                # Only try if session is valid (avoid login attempts on every call)
+                if angel.auth_token:
+                    quote = angel.get_quote(symbol, exchange)
+                    
+                    if quote and quote.get('price', 0) > 0:
+                        quote['data_source'] = 'angel_one_live'
+                        return quote
+                    
+            except Exception as e:
+                logger.warning(f"Angel One API error for {symbol}: {e}")
+                MarketDataService._last_api_error = str(e)
+        
+        # Fallback to simulated data (this is the default until credentials are fixed)
         base_price = MarketDataService.STOCK_BASE_PRICES.get(symbol, 1000)
         
-        # Add small exchange-specific variation (BSE slightly different)
+        # Add small exchange-specific variation
         if exchange == "BSE":
             base_price = base_price * (1 + (hash(symbol) % 100 - 50) * 0.0001)
         
-        price_data = MarketDataService._generate_realistic_price(base_price)
+        price_data = MarketDataService._generate_fallback_price(base_price)
         
         return {
             "symbol": symbol,
@@ -164,14 +188,31 @@ class MarketDataService:
             "volume": price_data["volume"],
             "change": price_data["change"],
             "change_pct": price_data["change_pct"],
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data_source": "simulated"
         }
     
     @staticmethod
     async def get_index_data(index_name: str) -> Dict[str, Any]:
-        """Get index data - uses simulated data for reliability"""
+        """Get index data from Angel One API with fallback"""
+        
+        # Try Angel One API first (only if session is valid)
+        if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
+            try:
+                angel = get_angel_service()
+                if angel.auth_token:
+                    quote = angel.get_index_quote(index_name)
+                    
+                    if quote and quote.get('value', 0) > 0:
+                        quote['data_source'] = 'angel_one_live'
+                        return quote
+                    
+            except Exception as e:
+                logger.warning(f"Angel One API error for index {index_name}: {e}")
+        
+        # Fallback to simulated data
         base_value = MarketDataService.INDEX_BASE_VALUES.get(index_name, 20000)
-        price_data = MarketDataService._generate_realistic_price(base_value, 0.015)
+        price_data = MarketDataService._generate_fallback_price(base_value, 0.015)
         
         return {
             "index": index_name,
@@ -179,19 +220,50 @@ class MarketDataService:
             "prev_close": price_data["prev_close"],
             "change": price_data["change"],
             "change_pct": price_data["change_pct"],
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data_source": "simulated"
         }
     
     @staticmethod
     async def get_multiple_stocks(symbols: List[str]) -> List[Dict[str, Any]]:
-        """Fetch multiple stocks in parallel"""
-        tasks = []
-        for symbol in symbols:
-            tasks.append(MarketDataService.get_stock_price(symbol, "NSE"))
-            tasks.append(MarketDataService.get_stock_price(symbol, "BSE"))
+        """Fetch multiple stocks - Angel One API or fallback"""
+        results = []
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        return [r for r in results if isinstance(r, dict) and not r.get("error")]
+        for symbol in symbols:
+            nse_data = await MarketDataService.get_stock_price(symbol, "NSE")
+            bse_data = await MarketDataService.get_stock_price(symbol, "BSE")
+            
+            if nse_data and nse_data.get('price', 0) > 0:
+                results.append(nse_data)
+            if bse_data and bse_data.get('price', 0) > 0:
+                results.append(bse_data)
+        
+        return results
+    
+    @staticmethod
+    def get_data_source_status() -> Dict[str, Any]:
+        """Get current data source status"""
+        if ANGEL_ONE_AVAILABLE:
+            angel = get_angel_service()
+            session_status = angel.get_session_status()
+            return {
+                "angel_one_available": True,
+                "use_live_data": MarketDataService._use_live_data,
+                "session_status": session_status,
+                "last_api_error": MarketDataService._last_api_error
+            }
+        return {
+            "angel_one_available": False,
+            "use_live_data": False,
+            "session_status": None,
+            "last_api_error": "Angel One service not configured"
+        }
+    
+    @staticmethod
+    def set_use_live_data(use_live: bool):
+        """Toggle between live and simulated data"""
+        MarketDataService._use_live_data = use_live
+        logger.info(f"Data source set to: {'live' if use_live else 'simulated'}")
 
 # ==================== ARBITRAGE ENGINE ====================
 
@@ -881,6 +953,55 @@ async def get_stocks(symbols: str = None):
 async def get_fo_stocks():
     """Get list of F&O stocks"""
     return {"stocks": MarketDataService.FO_STOCKS}
+
+# ==================== DATA SOURCE MANAGEMENT ====================
+
+@api_router.get("/market/data-source")
+async def get_data_source_status():
+    """Get current data source status (Angel One or simulated)"""
+    return MarketDataService.get_data_source_status()
+
+@api_router.post("/market/data-source/toggle")
+async def toggle_data_source(use_live: bool = True):
+    """Toggle between live Angel One data and simulated data"""
+    MarketDataService.set_use_live_data(use_live)
+    return {
+        "use_live_data": use_live,
+        "message": f"Data source set to {'Angel One Live' if use_live else 'Simulated'}"
+    }
+
+@api_router.post("/market/angel-one/login")
+async def angel_one_login():
+    """Manually trigger Angel One login"""
+    if not ANGEL_ONE_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Angel One service not configured")
+    
+    try:
+        angel = get_angel_service()
+        success = angel.login()
+        if success:
+            return {
+                "status": "success",
+                "message": "Angel One login successful",
+                "session_status": angel.get_session_status()
+            }
+        else:
+            raise HTTPException(status_code=401, detail="Angel One login failed - check credentials")
+    except Exception as e:
+        logger.error(f"Angel One login error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/market/angel-one/session")
+async def get_angel_one_session():
+    """Get Angel One session status"""
+    if not ANGEL_ONE_AVAILABLE:
+        return {"available": False, "message": "Angel One service not configured"}
+    
+    angel = get_angel_service()
+    return {
+        "available": True,
+        "session_status": angel.get_session_status()
+    }
 
 # ==================== ARBITRAGE ROUTES ====================
 

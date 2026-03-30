@@ -8,6 +8,9 @@ import {
   Activity,
   ArrowUpRight,
   ArrowDownRight,
+  Wifi,
+  WifiOff,
+  Database,
 } from "lucide-react";
 import {
   LineChart,
@@ -19,6 +22,7 @@ import {
   AreaChart,
   Area,
 } from "recharts";
+import { toast } from "sonner";
 
 export default function Dashboard() {
   const [indices, setIndices] = useState([]);
@@ -26,6 +30,16 @@ export default function Dashboard() {
   const [arbitrageOpps, setArbitrageOpps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [dataSource, setDataSource] = useState(null);
+
+  const fetchDataSource = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API}/market/data-source`);
+      setDataSource(response.data);
+    } catch (error) {
+      console.error("Error fetching data source:", error);
+    }
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -46,11 +60,24 @@ export default function Dashboard() {
     }
   }, []);
 
+  const connectAngelOne = async () => {
+    try {
+      toast.info("Connecting to Angel One...");
+      const response = await axios.post(`${API}/market/angel-one/login`);
+      toast.success("Angel One connected successfully!");
+      fetchDataSource();
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Failed to connect to Angel One");
+    }
+  };
+
   useEffect(() => {
+    fetchDataSource();
     fetchData();
-    const interval = setInterval(fetchData, 30000); // Refresh every 30 seconds
+    const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, fetchDataSource]);
 
   const formatPrice = (price) => {
     if (!price) return "—";
@@ -99,6 +126,29 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          {/* Data Source Status */}
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 rounded-lg border border-zinc-800">
+            {dataSource?.session_status?.is_logged_in ? (
+              <>
+                <Wifi className="w-4 h-4 text-green-500" />
+                <span className="text-xs text-green-500">Angel One Live</span>
+              </>
+            ) : (
+              <>
+                <Database className="w-4 h-4 text-yellow-500" />
+                <span className="text-xs text-yellow-500">Simulated Data</span>
+                {dataSource?.angel_one_available && (
+                  <button
+                    onClick={connectAngelOne}
+                    className="ml-2 text-xs text-blue-500 hover:underline"
+                    data-testid="connect-angel-btn"
+                  >
+                    Connect Live
+                  </button>
+                )}
+              </>
+            )}
+          </div>
           <span className="text-xs text-zinc-500">
             Last updated:{" "}
             {lastUpdate ? lastUpdate.toLocaleTimeString() : "—"}
