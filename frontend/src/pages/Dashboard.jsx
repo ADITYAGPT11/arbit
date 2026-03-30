@@ -42,22 +42,35 @@ export default function Dashboard() {
   }, []);
 
   const fetchData = useCallback(async () => {
+    // Load indices first (fastest)
     try {
-      const [indicesRes, stocksRes, arbRes] = await Promise.all([
-        axios.get(`${API}/market/indices`),
-        axios.get(`${API}/market/stocks`),
-        axios.get(`${API}/arbitrage/cross-exchange`),
-      ]);
-
+      const indicesRes = await axios.get(`${API}/market/indices`, { timeout: 30000 });
       setIndices(indicesRes.data);
-      setStocks(stocksRes.data.filter((s) => s.price > 0).slice(0, 20));
-      setArbitrageOpps(arbRes.data.slice(0, 10));
-      setLastUpdate(new Date());
     } catch (error) {
-      console.error("Error fetching data:", error);
-    } finally {
-      setLoading(false);
+      console.error("Error fetching indices:", error);
+      setIndices([]);
     }
+    
+    // Then load stocks
+    try {
+      const stocksRes = await axios.get(`${API}/market/stocks`, { timeout: 30000 });
+      setStocks(stocksRes.data.filter((s) => s.price !== null && s.price > 0).slice(0, 20));
+    } catch (error) {
+      console.error("Error fetching stocks:", error);
+      setStocks([]);
+    }
+    
+    // Finally arbitrage (may take longer)
+    try {
+      const arbRes = await axios.get(`${API}/arbitrage/cross-exchange?symbols=RELIANCE,TCS,INFY,HDFCBANK,SBIN`, { timeout: 30000 });
+      setArbitrageOpps(arbRes.data.slice(0, 10));
+    } catch (error) {
+      console.error("Error fetching arbitrage:", error);
+      setArbitrageOpps([]);
+    }
+    
+    setLastUpdate(new Date());
+    setLoading(false);
   }, []);
 
   const connectAngelOne = async () => {
@@ -80,7 +93,7 @@ export default function Dashboard() {
   }, [fetchData, fetchDataSource]);
 
   const formatPrice = (price) => {
-    if (!price) return "—";
+    if (price === null || price === undefined) return "—";
     return new Intl.NumberFormat("en-IN", {
       style: "currency",
       currency: "INR",
@@ -92,6 +105,11 @@ export default function Dashboard() {
     if (change === undefined || change === null) return "—";
     const sign = change >= 0 ? "+" : "";
     return `${sign}${change.toFixed(2)}%`;
+  };
+
+  const formatIndexValue = (value) => {
+    if (value === null || value === undefined) return "—";
+    return value.toLocaleString("en-IN", { maximumFractionDigits: 2 });
   };
 
   // Generate mock chart data for indices
@@ -108,8 +126,10 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="page-container">
-        <div className="loading-container">
-          <div className="loading-spinner"></div>
+        <div className="flex flex-col items-center justify-center min-h-[400px]">
+          <div className="loading-spinner mb-4"></div>
+          <p className="text-zinc-400">Loading live market data from Angel One...</p>
+          <p className="text-xs text-zinc-500 mt-2">This may take a few seconds</p>
         </div>
       </div>
     );
@@ -176,29 +196,27 @@ export default function Dashboard() {
               <span className="text-xs text-zinc-500 font-medium">
                 {index.index}
               </span>
-              <span
-                className={`text-xs font-medium ${
+              {index.data_source === 'angel_one_live' && (
+                <span className="text-[10px] text-green-500">● LIVE</span>
+              )}
+            </div>
+            <div className="font-mono text-xl font-bold">
+              {formatIndexValue(index.value)}
+            </div>
+            {index.change !== null && (
+              <div
+                className={`flex items-center gap-1 text-sm ${
                   index.change >= 0 ? "text-green-500" : "text-red-500"
                 }`}
               >
-                {formatChange(index.change_pct)}
-              </span>
-            </div>
-            <div className="font-mono text-xl font-bold">
-              {index.value?.toLocaleString("en-IN") || "—"}
-            </div>
-            <div
-              className={`flex items-center gap-1 text-sm ${
-                index.change >= 0 ? "text-green-500" : "text-red-500"
-              }`}
-            >
-              {index.change >= 0 ? (
-                <ArrowUpRight className="w-4 h-4" />
-              ) : (
-                <ArrowDownRight className="w-4 h-4" />
-              )}
-              <span>{index.change?.toFixed(2) || "—"}</span>
-            </div>
+                {index.change >= 0 ? (
+                  <ArrowUpRight className="w-4 h-4" />
+                ) : (
+                  <ArrowDownRight className="w-4 h-4" />
+                )}
+                <span>{index.change?.toFixed(2) || "—"}</span>
+              </div>
+            )}
           </div>
         ))}
       </div>

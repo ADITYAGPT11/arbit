@@ -122,6 +122,10 @@ class AngelOneService:
         
         try:
             self.smart_api = SmartConnect(api_key=self.api_key)
+            # Increase timeout for API calls
+            if hasattr(self.smart_api, 'session') and self.smart_api.session:
+                self.smart_api.session.timeout = 30  # 30 seconds timeout
+            
             totp = self._generate_totp()
             
             if not totp:
@@ -277,31 +281,25 @@ class AngelOneService:
                 logger.warning(f"Index {index_name} not found")
                 return None
             
-            # For indices, we use the index-specific endpoint
             exchange = index_info['exchange']
             token = index_info['token']
             
-            # Try to get LTP for index
-            data = self.smart_api.ltpData(exchange, index_name, token)
+            # Use getMarketData for faster batch-capable fetching
+            data = self.smart_api.getMarketData(mode="LTP", exchangeTokens={
+                exchange: [token]
+            })
             
-            if data.get('status') and data.get('data'):
-                ltp_data = data['data']
+            if data.get('status') and data.get('data', {}).get('fetched'):
+                ltp_data = data['data']['fetched'][0]
                 value = float(ltp_data.get('ltp', 0))
-                prev_close = float(ltp_data.get('close', 0))
                 
-                if prev_close > 0:
-                    change = value - prev_close
-                    change_pct = (change / prev_close) * 100
-                else:
-                    change = 0
-                    change_pct = 0
-                
+                # Note: getMarketData doesn't return OHLC, so we just return LTP
                 return {
                     "index": index_name,
                     "value": value,
-                    "prev_close": prev_close,
-                    "change": round(change, 2),
-                    "change_pct": round(change_pct, 2),
+                    "prev_close": None,  # Not available in LTP mode
+                    "change": None,
+                    "change_pct": None,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             else:
@@ -312,14 +310,112 @@ class AngelOneService:
             logger.error(f"Error fetching index {index_name}: {e}")
             return None
     
-    def get_multiple_quotes(self, symbols: List[str], exchange: str = "NSE") -> List[Dict[str, Any]]:
-        """Get quotes for multiple symbols"""
-        results = []
-        for symbol in symbols:
-            quote = self.get_quote(symbol, exchange)
-            if quote:
-                results.append(quote)
-        return results
+    def get_all_indices(self) -> List[Dict[str, Any]]:
+        """Get all indices in one batch call - much faster"""
+        if not self.ensure_session():
+            return []
+        
+        try:
+            # Build token lists by exchange
+            nse_tokens = []
+            bse_tokens = []
+            
+            for index_name, info in INDEX_TOKENS.items():
+                if info['exchange'] == 'NSE':
+                    nse_tokens.append(info['token'])
+                else:
+                    bse_tokens.append(info['token'])
+            
+            exchange_tokens = {}
+            if nse_tokens:
+                exchange_tokens['NSE'] = nse_tokens
+            if bse_tokens:
+                exchange_tokens['BSE'] = bse_tokens
+            
+            data = self.smart_api.getMarketData(mode="LTP", exchangeTokens=exchange_tokens)
+            
+            if data.get('status') and data.get('data', {}).get('fetched'):
+                results = []
+                fetched = data['data']['fetched']
+                
+                # Map tokens back to index names
+                token_to_name = {info['token']: name for name, info in INDEX_TOKENS.items()}
+                
+                for item in fetched:
+                    token = item.get('symbolToken')
+                    index_name = token_to_name.get(token)
+                    if index_name:
+                        results.append({
+                            "index": index_name,
+                            "value": float(item.get('ltp', 0)),
+                            "prev_close": None,
+                            "change": None,
+                            "change_pct": None,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "trading_symbol": item.get('tradingSymbol')
+                        })
+                
+                return results
+            
+            return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching all indices: {e}")
+            return []
+    
+    def get_multiple_stocks_batch(self, symbols: List[str], exchange: str = "NSE") -> List[Dict[str, Any]]:
+        """Get multiple stock LTPs in one batch call"""
+        if not self.ensure_session():
+            return []
+        
+        try:
+            tokens = []
+            symbol_map = {}  # token -> symbol
+            
+            for symbol in symbols:
+                token_info = SYMBOL_TOKENS.get(symbol)
+                if token_info:
+                    token = token_info.get(f"{exchange.lower()}_token") or token_info.get("nse_token")
+                    if token:
+                        tokens.append(token)
+                        symbol_map[token] = symbol
+            
+            if not tokens:
+                return []
+            
+            data = self.smart_api.getMarketData(mode="LTP", exchangeTokens={
+                exchange: tokens
+            })
+            
+            if data.get('status') and data.get('data', {}).get('fetched'):
+                results = []
+                
+                for item in data['data']['fetched']:
+                    token = item.get('symbolToken')
+                    symbol = symbol_map.get(token)
+                    if symbol:
+                        results.append({
+                            "symbol": symbol,
+                            "exchange": exchange,
+                            "price": float(item.get('ltp', 0)),
+                            "open": None,
+                            "high": None,
+                            "low": None,
+                            "prev_close": None,
+                            "change": None,
+                            "change_pct": None,
+                            "volume": None,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "data_source": "angel_one_live"
+                        })
+                
+                return results
+            
+            return []
+                
+        except Exception as e:
+            logger.error(f"Error batch fetching stocks: {e}")
+            return []
     
     def logout(self):
         """Logout and cleanup"""

@@ -124,12 +124,12 @@ class MarketDataService:
     ]
     
     # Data source tracking
-    _use_live_data = False  # Default to False - enable manually when market is open and API is accessible
+    _use_live_data = True  # Default to True - use Angel One live data
     _last_api_error = None
     
     @staticmethod
     def _generate_fallback_price(base_price: float, volatility: float = 0.02) -> Dict[str, float]:
-        """Generate fallback simulated price when API fails"""
+        """Generate fallback simulated price - ONLY used when live mode is OFF"""
         import random
         random.seed(int(datetime.now(timezone.utc).timestamp() / 60))
         
@@ -150,38 +150,48 @@ class MarketDataService:
     
     @staticmethod
     async def get_stock_price(symbol: str, exchange: str = "NSE") -> Dict[str, Any]:
-        """Get stock price from Angel One API with fast fallback to simulated data"""
+        """Get stock price - Live from Angel One or simulated based on toggle"""
         
-        # Try Angel One API first (only if session is valid and configured)
-        if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
+        # If live mode is ON, try Angel One API
+        if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
             try:
                 angel = get_angel_service()
-                # Only try if session is already valid (don't wait for login)
+                
+                # Ensure we have a valid session
+                if not angel.auth_token:
+                    angel.login()
+                
                 if angel.auth_token:
-                    import asyncio
-                    # Use a very short timeout - if API is slow, use fallback
-                    try:
-                        quote = await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None, lambda: angel.get_quote(symbol, exchange)
-                            ),
-                            timeout=2.0  # 2 second timeout
-                        )
-                        
-                        if quote and quote.get('price', 0) > 0:
-                            quote['data_source'] = 'angel_one_live'
-                            return quote
-                    except asyncio.TimeoutError:
-                        logger.debug(f"Angel One API timeout for {symbol}, using fallback")
+                    quote = angel.get_quote(symbol, exchange)
+                    
+                    if quote and quote.get('price') is not None:
+                        quote['data_source'] = 'angel_one_live'
+                        return quote
                     
             except Exception as e:
-                logger.debug(f"Angel One API error for {symbol}: {e}")
+                logger.warning(f"Angel One API error for {symbol}: {e}")
                 MarketDataService._last_api_error = str(e)
+            
+            # Live mode ON but API failed - return blank data, NOT mock
+            return {
+                "symbol": symbol,
+                "exchange": exchange,
+                "price": None,
+                "prev_close": None,
+                "open": None,
+                "high": None,
+                "low": None,
+                "volume": None,
+                "change": None,
+                "change_pct": None,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data_source": "angel_one_unavailable",
+                "error": "API timeout - data unavailable"
+            }
         
-        # Fast fallback to simulated data
+        # Live mode is OFF - use simulated data
         base_price = MarketDataService.STOCK_BASE_PRICES.get(symbol, 1000)
         
-        # Add small exchange-specific variation
         if exchange == "BSE":
             base_price = base_price * (1 + (hash(symbol) % 100 - 50) * 0.0001)
         
@@ -204,32 +214,39 @@ class MarketDataService:
     
     @staticmethod
     async def get_index_data(index_name: str) -> Dict[str, Any]:
-        """Get index data from Angel One API with fast fallback"""
+        """Get index data - Live from Angel One or simulated based on toggle"""
         
-        # Try Angel One API first (only if session is valid)
-        if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
+        # If live mode is ON, try Angel One API
+        if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
             try:
                 angel = get_angel_service()
+                
+                if not angel.auth_token:
+                    angel.login()
+                
                 if angel.auth_token:
-                    import asyncio
-                    try:
-                        quote = await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None, lambda: angel.get_index_quote(index_name)
-                            ),
-                            timeout=2.0
-                        )
-                        
-                        if quote and quote.get('value', 0) > 0:
-                            quote['data_source'] = 'angel_one_live'
-                            return quote
-                    except asyncio.TimeoutError:
-                        logger.debug(f"Angel One API timeout for index {index_name}, using fallback")
+                    quote = angel.get_index_quote(index_name)
+                    
+                    if quote and quote.get('value') is not None:
+                        quote['data_source'] = 'angel_one_live'
+                        return quote
                     
             except Exception as e:
-                logger.debug(f"Angel One API error for index {index_name}: {e}")
+                logger.warning(f"Angel One API error for index {index_name}: {e}")
+            
+            # Live mode ON but API failed - return blank data
+            return {
+                "index": index_name,
+                "value": None,
+                "prev_close": None,
+                "change": None,
+                "change_pct": None,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data_source": "angel_one_unavailable",
+                "error": "API timeout - data unavailable"
+            }
         
-        # Fast fallback to simulated data
+        # Live mode is OFF - use simulated data
         base_value = MarketDataService.INDEX_BASE_VALUES.get(index_name, 20000)
         price_data = MarketDataService._generate_fallback_price(base_value, 0.015)
         
@@ -947,7 +964,32 @@ async def logout(request: Request):
 
 @api_router.get("/market/indices")
 async def get_indices():
-    """Get major Indian indices"""
+    """Get major Indian indices - uses batch API for speed"""
+    # If live mode, use batch fetching
+    if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
+        try:
+            angel = get_angel_service()
+            if angel.auth_token:
+                results = angel.get_all_indices()
+                if results:
+                    for r in results:
+                        r['data_source'] = 'angel_one_live'
+                    return results
+        except Exception as e:
+            logger.warning(f"Batch index fetch failed: {e}")
+        
+        # Live mode but failed - return empty with error
+        return [{
+            "index": idx,
+            "value": None,
+            "prev_close": None,
+            "change": None,
+            "change_pct": None,
+            "data_source": "angel_one_unavailable",
+            "error": "API unavailable"
+        } for idx in ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "BANKEX"]]
+    
+    # Simulated mode
     indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "BANKEX"]
     tasks = [MarketDataService.get_index_data(idx) for idx in indices]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -960,12 +1002,36 @@ async def get_stock(symbol: str, exchange: str = "NSE"):
 
 @api_router.get("/market/stocks")
 async def get_stocks(symbols: str = None):
-    """Get multiple stock prices"""
+    """Get multiple stock prices - uses batch API for speed"""
     if symbols:
         symbol_list = [s.strip().upper() for s in symbols.split(",")]
     else:
-        symbol_list = MarketDataService.FO_STOCKS[:10]
+        symbol_list = MarketDataService.FO_STOCKS[:5]  # Default to 5 stocks for faster loading
     
+    # If live mode, use batch fetching
+    if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
+        try:
+            angel = get_angel_service()
+            if angel.auth_token:
+                # Get NSE and BSE separately
+                nse_results = angel.get_multiple_stocks_batch(symbol_list, "NSE")
+                bse_results = angel.get_multiple_stocks_batch(symbol_list, "BSE")
+                
+                if nse_results or bse_results:
+                    return nse_results + bse_results
+        except Exception as e:
+            logger.warning(f"Batch stock fetch failed: {e}")
+        
+        # Live mode but failed - return empty with error
+        return [{
+            "symbol": sym,
+            "exchange": "NSE",
+            "price": None,
+            "data_source": "angel_one_unavailable",
+            "error": "API unavailable"
+        } for sym in symbol_list]
+    
+    # Simulated mode
     return await MarketDataService.get_multiple_stocks(symbol_list)
 
 @api_router.get("/market/fo-stocks")
@@ -1268,6 +1334,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Auto-login to Angel One on startup"""
+    if ANGEL_ONE_AVAILABLE:
+        try:
+            angel = get_angel_service()
+            success = angel.login()
+            if success:
+                logger.info("Angel One auto-login successful on startup")
+            else:
+                logger.warning("Angel One auto-login failed - will use simulated data until manual login")
+        except Exception as e:
+            logger.error(f"Angel One startup login error: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    # Cleanup Angel One session
+    if ANGEL_ONE_AVAILABLE:
+        try:
+            angel = get_angel_service()
+            angel.logout()
+        except:
+            pass
