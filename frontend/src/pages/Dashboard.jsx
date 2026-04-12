@@ -31,11 +31,16 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [dataSource, setDataSource] = useState(null);
+  const [brokerStatus, setBrokerStatus] = useState(null);
 
   const fetchDataSource = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/market/data-source`);
-      setDataSource(response.data);
+      const [dsRes, bsRes] = await Promise.all([
+        axios.get(`${API}/market/data-source`),
+        axios.get(`${API}/market/broker-status`),
+      ]);
+      setDataSource(dsRes.data);
+      setBrokerStatus(bsRes.data);
     } catch (error) {
       console.error("Error fetching data source:", error);
     }
@@ -162,15 +167,23 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold">Market Dashboard</h1>
           <p className="text-zinc-500 text-sm">
             Real-time Indian market overview
+            {brokerStatus?.market?.current_time_ist && (
+              <span className="ml-2 text-zinc-600">
+                ({brokerStatus.market.current_time_ist})
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-4">
           {/* Data Source Status */}
           <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 rounded-lg border border-zinc-800">
-            {dataSource?.session_status?.is_connected ? (
+            {brokerStatus?.broker?.is_connected ? (
               <>
                 <Wifi className="w-4 h-4 text-green-500" />
                 <span className="text-xs text-green-500">Angel One Live</span>
+                {brokerStatus?.market?.is_market_open && (
+                  <span className="ml-1 text-[10px] text-green-400 font-bold tracking-wider animate-pulse">LIVE</span>
+                )}
               </>
             ) : dataSource?.session_status?.last_error ? (
               <>
@@ -181,7 +194,7 @@ export default function Dashboard() {
               <>
                 <Database className="w-4 h-4 text-yellow-500" />
                 <span className="text-xs text-yellow-500">Simulated Data</span>
-                {dataSource?.available && (
+                {dataSource?.angel_one_available && (
                   <button
                     onClick={connectAngelOne}
                     className="ml-2 text-xs text-blue-500 hover:underline"
@@ -193,6 +206,17 @@ export default function Dashboard() {
               </>
             )}
           </div>
+          {/* Market Session Badge */}
+          {brokerStatus?.market && (
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${
+              brokerStatus.market.is_market_open
+                ? "bg-green-900/20 border-green-900/50 text-green-500"
+                : "bg-zinc-900 border-zinc-800 text-zinc-400"
+            }`} data-testid="market-session-badge">
+              <Activity className="w-3.5 h-3.5" />
+              <span className="text-xs font-medium">{brokerStatus.market.session_label}</span>
+            </div>
+          )}
           <span className="text-xs text-zinc-500">
             Last updated:{" "}
             {lastUpdate ? lastUpdate.toLocaleTimeString() : "—"}
@@ -427,7 +451,13 @@ export default function Dashboard() {
         </div>
         <div className="stat-card" data-testid="stat-market-status">
           <div className="stat-label">Market Status</div>
-          <div className="stat-value text-green-500">OPEN</div>
+          <div className={`stat-value ${
+            brokerStatus?.market?.is_market_open ? "text-green-500" : "text-zinc-400"
+          }`}>
+            {brokerStatus?.market?.is_market_open ? "OPEN" : 
+             brokerStatus?.market?.session === "pre_open" ? "PRE-OPEN" :
+             brokerStatus?.market?.session === "post_market" ? "POST-MKT" : "CLOSED"}
+          </div>
         </div>
       </div>
     </div>

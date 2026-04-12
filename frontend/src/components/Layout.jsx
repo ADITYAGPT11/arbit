@@ -1,5 +1,6 @@
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
+import BrokerStatus from "./BrokerStatus";
 import {
   LayoutDashboard,
   ArrowLeftRight,
@@ -74,6 +75,9 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+
+        {/* Broker Connection Status */}
+        <BrokerStatus />
 
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-zinc-800">
           {user ? (

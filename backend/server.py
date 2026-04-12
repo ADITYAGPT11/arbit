@@ -326,17 +326,70 @@ class ArbitrageEngine:
     
     @staticmethod
     async def detect_cross_exchange_arbitrage(symbols: List[str]) -> List[Dict[str, Any]]:
-        """Detect NSE vs BSE price differences"""
+        """Detect NSE vs BSE price differences using batch API for speed"""
         opportunities = []
         
+        # Use batch fetching for speed
+        if ANGEL_ONE_AVAILABLE and MarketDataService._use_live_data:
+            try:
+                angel = get_angel_service()
+                if angel.is_connected():
+                    nse_stocks = angel.get_multiple_stocks_batch(symbols, "NSE")
+                    bse_stocks = angel.get_multiple_stocks_batch(symbols, "BSE")
+                    
+                    # Create lookup dictionaries
+                    nse_prices = {s['symbol']: s['price'] for s in nse_stocks if s.get('price')}
+                    bse_prices = {s['symbol']: s['price'] for s in bse_stocks if s.get('price')}
+                    
+                    for symbol in symbols:
+                        nse_price = nse_prices.get(symbol, 0)
+                        bse_price = bse_prices.get(symbol, 0)
+                        
+                        if nse_price > 0 and bse_price > 0:
+                            spread = abs(nse_price - bse_price)
+                            spread_pct = (spread / min(nse_price, bse_price)) * 100
+                            
+                            buy_exchange = "BSE" if bse_price < nse_price else "NSE"
+                            buy_price = min(nse_price, bse_price)
+                            sell_price = max(nse_price, bse_price)
+                            
+                            buy_cost = ArbitrageEngine.calculate_transaction_cost(buy_price, False)
+                            sell_cost = ArbitrageEngine.calculate_transaction_cost(sell_price, False)
+                            
+                            net_profit = spread - buy_cost - sell_cost
+                            net_profit_pct = (net_profit / buy_price) * 100
+                            
+                            # Show all opportunities with spread > 0.01% (lower threshold)
+                            if spread_pct > 0.01:
+                                opportunities.append({
+                                    "type": "cross_exchange",
+                                    "symbol": symbol,
+                                    "nse_price": round(nse_price, 2),
+                                    "bse_price": round(bse_price, 2),
+                                    "spread": round(spread, 2),
+                                    "spread_pct": round(spread_pct, 4),
+                                    "buy_exchange": buy_exchange,
+                                    "sell_exchange": "NSE" if buy_exchange == "BSE" else "BSE",
+                                    "net_profit_per_share": round(net_profit, 2),
+                                    "net_profit_pct": round(net_profit_pct, 4),
+                                    "is_profitable": net_profit > 0,
+                                    "data_source": "angel_one_live",
+                                    "timestamp": datetime.now(timezone.utc).isoformat()
+                                })
+                    
+                    return sorted(opportunities, key=lambda x: x["spread_pct"], reverse=True)
+            except Exception as e:
+                logger.error(f"Batch arbitrage detection error: {e}")
+        
+        # Fallback to individual fetching (slower)
         for symbol in symbols:
             nse_data = await MarketDataService.get_stock_price(symbol, "NSE")
             bse_data = await MarketDataService.get_stock_price(symbol, "BSE")
             
-            nse_price = nse_data.get("price", 0)
-            bse_price = bse_data.get("price", 0)
+            nse_price = nse_data.get("price") if nse_data else 0
+            bse_price = bse_data.get("price") if bse_data else 0
             
-            if nse_price > 0 and bse_price > 0:
+            if nse_price and nse_price > 0 and bse_price and bse_price > 0:
                 spread = abs(nse_price - bse_price)
                 spread_pct = (spread / min(nse_price, bse_price)) * 100
                 
@@ -1124,14 +1177,102 @@ async def reset_angel_one():
         "message": "Credentials reloaded" + (" and login successful" if success else " but login failed"),
         "session_status": angel.get_session_status()
     }
-    """Get Angel One session status"""
-    if not ANGEL_ONE_AVAILABLE:
-        return {"available": False, "message": "Angel One service not configured"}
+
+# ==================== BROKER STATUS ====================
+
+def get_market_session_info() -> Dict[str, Any]:
+    """Determine Indian market session status based on IST time"""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist)
+    weekday = now_ist.weekday()  # 0=Mon, 6=Sun
     
-    angel = get_angel_service()
+    time_str = now_ist.strftime("%H:%M")
+    hour = now_ist.hour
+    minute = now_ist.minute
+    current_minutes = hour * 60 + minute
+    
+    # Market timings in minutes from midnight (IST)
+    pre_open = 9 * 60           # 09:00
+    market_open = 9 * 60 + 15   # 09:15
+    market_close = 15 * 60 + 30 # 15:30
+    post_close = 16 * 60        # 16:00
+    
+    is_weekend = weekday >= 5
+    
+    if is_weekend:
+        session = "closed"
+        session_label = "Weekend - Market Closed"
+        next_open = "Monday 09:15 IST"
+    elif current_minutes < pre_open:
+        session = "pre_market"
+        session_label = "Pre-Market"
+        next_open = "09:15 IST"
+    elif current_minutes < market_open:
+        session = "pre_open"
+        session_label = "Pre-Open Session"
+        next_open = "09:15 IST"
+    elif current_minutes < market_close:
+        session = "market_open"
+        session_label = "Market Open"
+        mins_left = market_close - current_minutes
+        next_open = f"Closes in {mins_left // 60}h {mins_left % 60}m"
+    elif current_minutes < post_close:
+        session = "post_market"
+        session_label = "Post-Market / Closing Session"
+        next_open = "Next trading day 09:15 IST"
+    else:
+        session = "closed"
+        session_label = "Market Closed"
+        next_open = "Next trading day 09:15 IST"
+    
     return {
-        "available": True,
-        "session_status": angel.get_session_status()
+        "session": session,
+        "session_label": session_label,
+        "is_market_open": session == "market_open",
+        "is_trading_hours": session in ("market_open", "pre_open"),
+        "current_time_ist": now_ist.strftime("%Y-%m-%d %H:%M:%S IST"),
+        "next_event": next_open,
+        "is_weekend": is_weekend
+    }
+
+@api_router.get("/market/broker-status")
+async def get_broker_status():
+    """Get comprehensive broker connection + market session status"""
+    market_info = get_market_session_info()
+    
+    broker_status = {
+        "broker": "angel_one",
+        "is_available": ANGEL_ONE_AVAILABLE,
+        "is_connected": False,
+        "client_id": None,
+        "session_expiry": None,
+        "time_remaining": None,
+        "last_error": None,
+        "credentials_configured": False
+    }
+    
+    if ANGEL_ONE_AVAILABLE:
+        angel = get_angel_service()
+        session = angel.get_session_status()
+        broker_status.update({
+            "is_connected": session["is_connected"],
+            "client_id": session["client_id"],
+            "session_expiry": session["session_expiry"],
+            "time_remaining": session["time_remaining"],
+            "last_error": session["last_error"],
+            "credentials_configured": session["credentials_configured"],
+            "last_login": session["last_login"],
+            "login_attempts": session["login_attempts"]
+        })
+    
+    # Determine overall data mode
+    data_mode = "live" if broker_status["is_connected"] and MarketDataService._use_live_data else "simulated"
+    
+    return {
+        "broker": broker_status,
+        "market": market_info,
+        "data_mode": data_mode,
+        "use_live_data": MarketDataService._use_live_data
     }
 
 # ==================== ARBITRAGE ROUTES ====================
