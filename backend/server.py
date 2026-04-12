@@ -1063,6 +1063,8 @@ async def angel_one_login():
     
     try:
         angel = get_angel_service()
+        # Reset attempts before trying
+        angel.reset_login_attempts()
         success = angel.login()
         if success:
             return {
@@ -1071,13 +1073,57 @@ async def angel_one_login():
                 "session_status": angel.get_session_status()
             }
         else:
-            raise HTTPException(status_code=401, detail="Angel One login failed - check credentials")
+            status = angel.get_session_status()
+            raise HTTPException(
+                status_code=401, 
+                detail=f"Angel One login failed: {status.get('last_error', 'Unknown error')}"
+            )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Angel One login error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/market/angel-one/session")
 async def get_angel_one_session():
+    """Get Angel One session status with detailed info"""
+    if not ANGEL_ONE_AVAILABLE:
+        return {
+            "available": False, 
+            "message": "Angel One service not configured",
+            "session_status": None
+        }
+    
+    angel = get_angel_service()
+    status = angel.get_session_status()
+    
+    return {
+        "available": True,
+        "session_status": status,
+        "help": {
+            "if_not_connected": "Call POST /api/market/angel-one/login to connect",
+            "credentials_location": "Update credentials in /app/backend/.env and restart backend",
+            "required_credentials": ["ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_MPIN", "ANGEL_TOTP_SECRET"]
+        }
+    }
+
+@api_router.post("/market/angel-one/reset")
+async def reset_angel_one():
+    """Reset Angel One service - use after updating credentials"""
+    if not ANGEL_ONE_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Angel One service not configured")
+    
+    angel = get_angel_service()
+    angel.reset_login_attempts()
+    
+    # Try to login with new credentials
+    success = angel.login()
+    
+    return {
+        "status": "success" if success else "failed",
+        "message": "Credentials reloaded" + (" and login successful" if success else " but login failed"),
+        "session_status": angel.get_session_status()
+    }
     """Get Angel One session status"""
     if not ANGEL_ONE_AVAILABLE:
         return {"available": False, "message": "Angel One service not configured"}

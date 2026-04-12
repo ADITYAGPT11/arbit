@@ -137,6 +137,25 @@ export default function Dashboard() {
 
   return (
     <div className="page-container" data-testid="dashboard">
+      {/* Connection Error Alert */}
+      {dataSource?.session_status?.last_error && (
+        <div className="mb-4 p-4 bg-red-900/20 border border-red-900/50 rounded-lg">
+          <div className="flex items-start gap-3">
+            <WifiOff className="w-5 h-5 text-red-500 mt-0.5" />
+            <div>
+              <h3 className="font-medium text-red-500">Angel One Connection Failed</h3>
+              <p className="text-sm text-zinc-400 mt-1">{dataSource.session_status.last_error}</p>
+              <p className="text-xs text-zinc-500 mt-2">
+                Please check your API credentials at{" "}
+                <a href="https://smartapi.angelbroking.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">
+                  smartapi.angelbroking.com
+                </a>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>
@@ -148,16 +167,21 @@ export default function Dashboard() {
         <div className="flex items-center gap-4">
           {/* Data Source Status */}
           <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 rounded-lg border border-zinc-800">
-            {dataSource?.session_status?.is_logged_in ? (
+            {dataSource?.session_status?.is_connected ? (
               <>
                 <Wifi className="w-4 h-4 text-green-500" />
                 <span className="text-xs text-green-500">Angel One Live</span>
+              </>
+            ) : dataSource?.session_status?.last_error ? (
+              <>
+                <WifiOff className="w-4 h-4 text-red-500" />
+                <span className="text-xs text-red-500">Connection Error</span>
               </>
             ) : (
               <>
                 <Database className="w-4 h-4 text-yellow-500" />
                 <span className="text-xs text-yellow-500">Simulated Data</span>
-                {dataSource?.angel_one_available && (
+                {dataSource?.available && (
                   <button
                     onClick={connectAngelOne}
                     className="ml-2 text-xs text-blue-500 hover:underline"
