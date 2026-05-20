@@ -15,6 +15,7 @@ import PerformanceAnalytics from "./pages/PerformanceAnalytics";
 import RiskManagement from "./pages/RiskManagement";
 import AlertsConfig from "./pages/AlertsConfig";
 import Backtesting from "./pages/Backtesting";
+import OptionChain from "./pages/OptionChain";
 import Login from "./pages/Login";
 import Layout from "./components/Layout";
 
@@ -157,6 +158,7 @@ function AppRouter() {
       <Route path="/" element={<Layout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
+        <Route path="option-chain" element={<OptionChain />} />
         <Route path="arbitrage" element={<ArbitrageScanner />} />
         <Route path="cash-carry" element={<CashCarryArbitrage />} />
         <Route path="synthetic" element={<SyntheticArbitrage />} />

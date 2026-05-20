@@ -90,11 +90,19 @@ class ArbitrageOpportunity(BaseModel):
 
 # Import Angel One Service
 try:
-    from angel_one_service import get_angel_service, SYMBOL_TOKENS
+    from angel_one_service import get_angel_service, SYMBOL_TOKENS, INDEX_TOKENS as ANGEL_INDEX_TOKENS
     ANGEL_ONE_AVAILABLE = True
 except ImportError:
     ANGEL_ONE_AVAILABLE = False
     logger.warning("Angel One service not available, using simulated data")
+
+# Import Option Chain Service
+try:
+    from option_chain_service import get_option_chain_service
+    OPTION_CHAIN_AVAILABLE = True
+except ImportError:
+    OPTION_CHAIN_AVAILABLE = False
+    logger.warning("Option chain service not available")
 
 
 class MarketDataService:
@@ -1332,6 +1340,88 @@ async def calculate_statistical_arb(
 ):
     """Calculate statistical arbitrage signals"""
     return ArbitrageEngine.calculate_statistical_arbitrage(prices1, prices2, lookback)
+
+# ==================== OPTION CHAIN ROUTES ====================
+
+@api_router.get("/options/underlyings")
+async def get_option_underlyings():
+    """Get available underlyings for option chain"""
+    if not OPTION_CHAIN_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Option chain service not available")
+    
+    oc_service = get_option_chain_service()
+    return oc_service.get_underlyings()
+
+@api_router.get("/options/expiries")
+async def get_option_expiries(underlying: str = "NIFTY"):
+    """Get available expiry dates for an underlying"""
+    if not OPTION_CHAIN_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Option chain service not available")
+    
+    oc_service = get_option_chain_service()
+    return oc_service.get_expiries(underlying.upper())
+
+@api_router.get("/options/chain")
+async def get_option_chain(underlying: str = "NIFTY", expiry: str = None, num_strikes: int = 15):
+    """Get T-shaped option chain with live data"""
+    if not OPTION_CHAIN_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Option chain service not available")
+    
+    oc_service = get_option_chain_service()
+    
+    # If no expiry specified, use the nearest one
+    if not expiry:
+        expiries = oc_service.get_expiries(underlying.upper())
+        if expiries:
+            expiry = expiries[0]["expiry"]
+        else:
+            raise HTTPException(status_code=404, detail=f"No expiries found for {underlying}")
+    
+    # Get spot price from Angel One
+    spot_price = 0
+    if ANGEL_ONE_AVAILABLE:
+        angel = get_angel_service()
+        if angel.is_connected():
+            # For index underlyings, get from index data
+            from angel_one_service import INDEX_TOKENS as IDX_TOKENS
+            if underlying.upper() in IDX_TOKENS:
+                idx_info = IDX_TOKENS[underlying.upper()]
+                try:
+                    data = angel.smart_api.getMarketData(
+                        mode="LTP",
+                        exchangeTokens={idx_info["exchange"]: [idx_info["token"]]}
+                    )
+                    if data.get("status") and data.get("data", {}).get("fetched"):
+                        spot_price = float(data["data"]["fetched"][0].get("ltp", 0))
+                except Exception as e:
+                    logger.error(f"Error fetching spot price for {underlying}: {e}")
+            else:
+                # Stock option - get NSE equity price
+                from angel_one_service import SYMBOL_TOKENS as SYM_TOKENS
+                if underlying.upper() in SYM_TOKENS:
+                    token_info = SYM_TOKENS[underlying.upper()]
+                    try:
+                        data = angel.smart_api.getMarketData(
+                            mode="LTP",
+                            exchangeTokens={"NSE": [token_info["nse_token"]]}
+                        )
+                        if data.get("status") and data.get("data", {}).get("fetched"):
+                            spot_price = float(data["data"]["fetched"][0].get("ltp", 0))
+                    except Exception as e:
+                        logger.error(f"Error fetching spot price for {underlying}: {e}")
+    
+    if spot_price <= 0:
+        # Fallback spot prices
+        fallback_spots = {
+            "NIFTY": 24000, "BANKNIFTY": 50000, "FINNIFTY": 22000,
+            "MIDCPNIFTY": 10500, "SENSEX": 78000, "NIFTYNXT50": 65000,
+        }
+        spot_price = fallback_spots.get(underlying.upper(), 1000)
+    
+    angel = get_angel_service() if ANGEL_ONE_AVAILABLE else None
+    result = oc_service.build_option_chain(angel, underlying.upper(), expiry, spot_price, num_strikes)
+    
+    return result
 
 # ==================== ANALYTICS ROUTES ====================
 

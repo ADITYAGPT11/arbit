@@ -16,10 +16,12 @@ import {
   Calendar,
   LineChart,
   User,
+  Grid3x3,
 } from "lucide-react";
 
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, public: true },
+  { path: "/option-chain", label: "Option Chain", icon: Grid3x3, public: true },
   { path: "/arbitrage", label: "Cross-Exchange Arb", icon: ArrowLeftRight, public: true },
   { path: "/cash-carry", label: "Cash & Carry", icon: Calculator, public: true },
   { path: "/synthetic", label: "Synthetic Futures", icon: GitCompare, public: true },
@@ -27,7 +29,7 @@ const navItems = [
   { path: "/statistical", label: "Statistical Arb", icon: LineChart, public: true },
   { path: "/performance", label: "Performance", icon: TrendingUp, public: true },
   { path: "/risk", label: "Risk Management", icon: Shield, public: true },
-  { path: "/alerts", label: "Alerts", icon: Bell, public: false }, // Requires login
+  { path: "/alerts", label: "Alerts", icon: Bell, public: false },
   { path: "/backtest", label: "Backtesting", icon: History, public: true },
 ];
 
