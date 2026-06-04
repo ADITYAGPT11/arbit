@@ -269,9 +269,86 @@ export default function Dashboard() {
       </div>
 
       {/* Main Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-6">
+        {/* Arbitrage Live Tracker — Side by Side */}
+        <div className="card" data-testid="arbitrage-opps">
+          <div className="card-header">
+            <span className="card-title">Arbitrage Scanner — NSE vs BSE (Live)</span>
+            <span className="badge badge-green">Live</span>
+          </div>
+          {arbitrageOpps.length > 0 ? (
+            <div className="space-y-4">
+              {arbitrageOpps.map((opp, idx) => (
+                <div key={idx} className="arb-card" data-testid={`arb-opp-${idx}`}>
+                  {/* Header */}
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg font-bold">{opp.symbol}</span>
+                      <span className={`badge ${opp.is_profitable ? "badge-green" : "badge-yellow"}`}>
+                        Spread {opp.spread_pct?.toFixed(3)}%
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-500">
+                      {new Date(opp.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  {/* Side by Side Prices */}
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div className={`arb-exchange-box ${opp.buy_exchange === "NSE" ? "arb-buy" : "arb-sell"}`}>
+                      <div className="arb-exchange-label">
+                        <span className="badge badge-blue text-[10px]">NSE</span>
+                        <span className={`text-[10px] font-semibold ${opp.buy_exchange === "NSE" ? "text-green-500" : "text-red-400"}`}>
+                          {opp.buy_exchange === "NSE" ? "BUY" : "SELL"}
+                        </span>
+                      </div>
+                      <div className="arb-exchange-price">{formatPrice(opp.nse_price)}</div>
+                    </div>
+                    <div className={`arb-exchange-box ${opp.buy_exchange === "BSE" ? "arb-buy" : "arb-sell"}`}>
+                      <div className="arb-exchange-label">
+                        <span className="badge badge-yellow text-[10px]">BSE</span>
+                        <span className={`text-[10px] font-semibold ${opp.buy_exchange === "BSE" ? "text-green-500" : "text-red-400"}`}>
+                          {opp.buy_exchange === "BSE" ? "BUY" : "SELL"}
+                        </span>
+                      </div>
+                      <div className="arb-exchange-price">{formatPrice(opp.bse_price)}</div>
+                    </div>
+                  </div>
+                  {/* Cost Breakdown */}
+                  <div className="arb-cost-grid">
+                    <div className="arb-cost-item">
+                      <span className="arb-cost-label">Gross Spread</span>
+                      <span className="font-mono text-white">{formatPrice(opp.spread)}</span>
+                    </div>
+                    <div className="arb-cost-item">
+                      <span className="arb-cost-label">Txn Cost</span>
+                      <span className="font-mono text-red-400">-{formatPrice(opp.txn_cost)}</span>
+                    </div>
+                    <div className="arb-cost-item">
+                      <span className="arb-cost-label">Slippage ({opp.slippage_pct || 0.02}%)</span>
+                      <span className="font-mono text-red-400">-{formatPrice(opp.slippage)}</span>
+                    </div>
+                    <div className="arb-cost-item arb-cost-net">
+                      <span className="arb-cost-label font-semibold">Net Profit/Share</span>
+                      <span className={`font-mono font-bold ${opp.net_profit_per_share >= 0 ? "text-green-500" : "text-red-500"}`}>
+                        {opp.net_profit_per_share >= 0 ? "+" : ""}{formatPrice(opp.net_profit_per_share)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <p>No significant arbitrage opportunities detected</p>
+              <p className="text-xs mt-2">
+                Opportunities appear when NSE-BSE spread &gt; 0.01%
+              </p>
+            </div>
+          )}
+        </div>
+
         {/* Stock Prices */}
-        <div className="lg:col-span-2 card" data-testid="stock-prices-table">
+        <div className="card" data-testid="stock-prices-table">
           <div className="card-header">
             <span className="card-title">F&O Stocks - NSE vs BSE</span>
             <Activity className="w-4 h-4 text-zinc-500" />
@@ -292,22 +369,12 @@ export default function Dashboard() {
                   <tr key={`${stock.symbol}-${stock.exchange}-${idx}`}>
                     <td className="font-medium">{stock.symbol}</td>
                     <td>
-                      <span
-                        className={`badge ${
-                          stock.exchange === "NSE"
-                            ? "badge-blue"
-                            : "badge-yellow"
-                        }`}
-                      >
+                      <span className={`badge ${stock.exchange === "NSE" ? "badge-blue" : "badge-yellow"}`}>
                         {stock.exchange}
                       </span>
                     </td>
                     <td>{formatPrice(stock.price)}</td>
-                    <td
-                      className={
-                        stock.change_pct >= 0 ? "price-up" : "price-down"
-                      }
-                    >
+                    <td className={stock.change_pct >= 0 ? "price-up" : "price-down"}>
                       {formatChange(stock.change_pct)}
                     </td>
                     <td>{stock.volume?.toLocaleString("en-IN") || "—"}</td>
@@ -316,55 +383,6 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-        </div>
-
-        {/* Arbitrage Opportunities */}
-        <div className="card" data-testid="arbitrage-opps">
-          <div className="card-header">
-            <span className="card-title">Arbitrage Opportunities</span>
-            <span className="badge badge-green">Live</span>
-          </div>
-          {arbitrageOpps.length > 0 ? (
-            <div className="space-y-3">
-              {arbitrageOpps.map((opp, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 bg-zinc-900 rounded-lg border border-zinc-800"
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <span className="font-medium">{opp.symbol}</span>
-                    <span className="badge badge-green">
-                      {opp.spread_pct?.toFixed(2)}%
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <span className="text-zinc-500">NSE:</span>
-                      <span className="ml-2 font-mono">
-                        {formatPrice(opp.nse_price)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-zinc-500">BSE:</span>
-                      <span className="ml-2 font-mono">
-                        {formatPrice(opp.bse_price)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="mt-2 text-xs text-green-500">
-                    Net Profit: {formatPrice(opp.net_profit_per_share)}/share
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">
-              <p>No significant arbitrage opportunities detected</p>
-              <p className="text-xs mt-2">
-                Opportunities appear when spread &gt; 0.1%
-              </p>
-            </div>
-          )}
         </div>
       </div>
 

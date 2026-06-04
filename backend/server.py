@@ -364,8 +364,13 @@ class ArbitrageEngine:
                             
                             buy_cost = ArbitrageEngine.calculate_transaction_cost(buy_price, False)
                             sell_cost = ArbitrageEngine.calculate_transaction_cost(sell_price, False)
+                            total_txn_cost = buy_cost + sell_cost
                             
-                            net_profit = spread - buy_cost - sell_cost
+                            # Slippage estimate (0.02% of trade value for liquid F&O stocks)
+                            slippage_pct = 0.02
+                            slippage = (buy_price + sell_price) * slippage_pct / 100
+                            
+                            net_profit = spread - total_txn_cost - slippage
                             net_profit_pct = (net_profit / buy_price) * 100
                             
                             # Show all opportunities with spread > 0.01% (lower threshold)
@@ -379,6 +384,11 @@ class ArbitrageEngine:
                                     "spread_pct": round(spread_pct, 4),
                                     "buy_exchange": buy_exchange,
                                     "sell_exchange": "NSE" if buy_exchange == "BSE" else "BSE",
+                                    "buy_price": round(buy_price, 2),
+                                    "sell_price": round(sell_price, 2),
+                                    "txn_cost": round(total_txn_cost, 2),
+                                    "slippage": round(slippage, 2),
+                                    "slippage_pct": slippage_pct,
                                     "net_profit_per_share": round(net_profit, 2),
                                     "net_profit_pct": round(net_profit_pct, 4),
                                     "is_profitable": net_profit > 0,

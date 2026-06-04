@@ -6,18 +6,11 @@ import {
   ArrowUpDown,
   Zap,
   Clock,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 
 const REFRESH_INTERVAL = 5000;
-
-function formatNum(val, decimals = 2) {
-  if (!val && val !== 0) return "—";
-  if (val >= 10000000) return (val / 10000000).toFixed(2) + " Cr";
-  if (val >= 100000) return (val / 100000).toFixed(2) + " L";
-  if (val >= 1000) return (val / 1000).toFixed(1) + " K";
-  return typeof val === "number" ? val.toFixed(decimals) : val;
-}
 
 function formatOI(val) {
   if (!val && val !== 0) return "—";
@@ -30,6 +23,11 @@ function formatOI(val) {
 function formatPrice(val) {
   if (!val && val !== 0) return "—";
   return val.toFixed(2);
+}
+
+function formatIV(val) {
+  if (!val && val !== 0) return "—";
+  return val.toFixed(1);
 }
 
 export default function OptionChain() {
@@ -98,8 +96,9 @@ export default function OptionChain() {
     }
   }, [chain?.atm_strike]);
 
-  const ceColumns = ["OI", "Chg OI", "Volume", "IV", "LTP", "Chg"];
-  const peColumns = ["Chg", "LTP", "IV", "Volume", "Chg OI", "OI"];
+  // Expiry label for display
+  const expiryObj = expiries.find((e) => e.expiry === expiry);
+  const expiryLabel = expiryObj ? `${expiryObj.expiry} (${expiryObj.date})` : expiry;
 
   if (loading && !chain) {
     return (
@@ -115,47 +114,46 @@ export default function OptionChain() {
 
   return (
     <div className="page-container" data-testid="option-chain-page">
-      {/* Header */}
-      <div className="flex flex-col gap-3 mb-4">
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold">Option Chain</h1>
-            <p className="text-zinc-500 text-xs sm:text-sm">
-              T-shaped view with live data from Angel One
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] sm:text-xs font-medium transition-colors ${
-                autoRefresh
-                  ? "bg-green-900/20 border-green-900/50 text-green-500"
-                  : "bg-zinc-900 border-zinc-800 text-zinc-400"
-              }`}
-              data-testid="auto-refresh-toggle"
-            >
-              <Zap className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-              {autoRefresh ? "Auto 5s" : "Paused"}
-            </button>
-            <button
-              onClick={fetchChain}
-              className="btn btn-secondary flex items-center gap-1 text-xs px-2 sm:px-4 py-1.5"
-              data-testid="refresh-chain-btn"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Refresh</span>
-            </button>
-          </div>
+      {/* ===== Prominent Symbol & Expiry Banner ===== */}
+      <div className="oc-banner" data-testid="oc-banner">
+        <div className="oc-banner-left">
+          <h1 className="oc-banner-symbol" data-testid="oc-current-symbol">{underlying}</h1>
+          <span className="oc-banner-expiry" data-testid="oc-current-expiry">{expiryLabel}</span>
+          {chain && (
+            <span className="oc-banner-spot">
+              Spot <span className="font-mono text-white">{chain.spot_price?.toLocaleString("en-IN")}</span>
+            </span>
+          )}
         </div>
-
-        {/* Controls */}
-        <div className="oc-controls-row">
-          <select
-            value={underlying}
-            onChange={(e) => setUnderlying(e.target.value)}
-            className="oc-select"
-            data-testid="underlying-select"
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] sm:text-xs font-medium transition-colors ${
+              autoRefresh
+                ? "bg-green-900/20 border-green-900/50 text-green-500"
+                : "bg-zinc-900 border-zinc-800 text-zinc-400"
+            }`}
+            data-testid="auto-refresh-toggle"
           >
+            <Zap className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            {autoRefresh ? "Auto 5s" : "Paused"}
+          </button>
+          <button
+            onClick={fetchChain}
+            className="btn btn-secondary flex items-center gap-1 text-xs px-2 sm:px-4 py-1.5"
+            data-testid="refresh-chain-btn"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ===== Controls ===== */}
+      <div className="oc-controls-row mb-3">
+        <div className="oc-control-group">
+          <label className="oc-control-label">Underlying</label>
+          <select value={underlying} onChange={(e) => setUnderlying(e.target.value)} className="oc-select" data-testid="underlying-select">
             {underlyings.length > 0 ? (
               <>
                 <optgroup label="Indices">
@@ -170,70 +168,49 @@ export default function OptionChain() {
                 </optgroup>
               </>
             ) : (
-              <>
-                <option value="NIFTY">NIFTY</option>
-                <option value="BANKNIFTY">BANKNIFTY</option>
-              </>
+              <option value="NIFTY">NIFTY</option>
             )}
           </select>
-
-          <select
-            value={expiry}
-            onChange={(e) => setExpiry(e.target.value)}
-            className="oc-select"
-            data-testid="expiry-select"
-          >
+        </div>
+        <div className="oc-control-group">
+          <label className="oc-control-label">Expiry</label>
+          <select value={expiry} onChange={(e) => setExpiry(e.target.value)} className="oc-select" data-testid="expiry-select">
             {expiries.map((e) => (
-              <option key={e.expiry} value={e.expiry}>{e.expiry}</option>
+              <option key={e.expiry} value={e.expiry}>{e.expiry} ({e.date})</option>
             ))}
           </select>
-
-          <select
-            value={numStrikes}
-            onChange={(e) => setNumStrikes(parseInt(e.target.value))}
-            className="oc-select oc-select-sm"
-            data-testid="strikes-select"
-          >
+        </div>
+        <div className="oc-control-group">
+          <label className="oc-control-label">Strikes</label>
+          <select value={numStrikes} onChange={(e) => setNumStrikes(parseInt(e.target.value))} className="oc-select oc-select-sm" data-testid="strikes-select">
             <option value={10}>10</option>
             <option value={15}>15</option>
             <option value={20}>20</option>
             <option value={25}>25</option>
           </select>
-
-          {/* Key stats — inline on larger screens */}
-          {chain && (
-            <div className="oc-stats-inline">
-              <span className="text-zinc-500">
-                Spot: <span className="font-mono text-white font-medium">{chain.spot_price?.toLocaleString("en-IN")}</span>
-              </span>
-              <span className="text-zinc-500">
-                ATM: <span className="font-mono text-yellow-500 font-medium">{chain.atm_strike}</span>
-              </span>
-              <span className="text-zinc-500">
-                PCR:{" "}
-                <span className={`font-mono font-medium ${chain.totals?.pcr > 1 ? "text-green-500" : "text-red-500"}`}>
-                  {chain.totals?.pcr}
-                </span>
-              </span>
-              <span className="text-zinc-600 hidden sm:flex items-center gap-1">
-                <Clock className="w-3 h-3" />
-                {lastUpdate?.toLocaleTimeString()} ({fetchTime}ms)
-              </span>
-            </div>
-          )}
         </div>
+
+        {chain && (
+          <div className="oc-stats-inline">
+            <span>ATM: <span className="font-mono text-yellow-500 font-semibold">{chain.atm_strike}</span></span>
+            <span>PCR: <span className={`font-mono font-semibold ${chain.totals?.pcr > 1 ? "text-green-500" : "text-red-500"}`}>{chain.totals?.pcr}</span></span>
+            <span className="text-zinc-600 hidden sm:flex items-center gap-1">
+              <Clock className="w-3 h-3" />{lastUpdate?.toLocaleTimeString()} ({fetchTime}ms)
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Summary Bar */}
+      {/* ===== Summary Bar ===== */}
       {chain?.totals && (
         <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 sm:gap-3 mb-4">
           <div className="oc-summary-card" data-testid="total-ce-oi">
             <span className="oc-summary-label">Call OI</span>
-            <span className="oc-summary-value text-red-400">{formatOI(chain.totals.ce_oi)}</span>
+            <span className="oc-summary-value text-green-400">{formatOI(chain.totals.ce_oi)}</span>
           </div>
           <div className="oc-summary-card" data-testid="total-pe-oi">
             <span className="oc-summary-label">Put OI</span>
-            <span className="oc-summary-value text-green-400">{formatOI(chain.totals.pe_oi)}</span>
+            <span className="oc-summary-value text-red-400">{formatOI(chain.totals.pe_oi)}</span>
           </div>
           <div className="oc-summary-card" data-testid="pcr-value">
             <span className="oc-summary-label">PCR</span>
@@ -243,16 +220,16 @@ export default function OptionChain() {
           </div>
           <div className="oc-summary-card hidden sm:block" data-testid="total-ce-vol">
             <span className="oc-summary-label">Call Vol</span>
-            <span className="oc-summary-value text-zinc-300">{formatOI(chain.totals.ce_volume)}</span>
+            <span className="oc-summary-value text-green-300">{formatOI(chain.totals.ce_volume)}</span>
           </div>
           <div className="oc-summary-card hidden sm:block" data-testid="total-pe-vol">
             <span className="oc-summary-label">Put Vol</span>
-            <span className="oc-summary-value text-zinc-300">{formatOI(chain.totals.pe_volume)}</span>
+            <span className="oc-summary-value text-red-300">{formatOI(chain.totals.pe_volume)}</span>
           </div>
         </div>
       )}
 
-      {/* T-Shaped Table */}
+      {/* ===== T-Shaped Table (CE=Green, PE=Red) ===== */}
       {chain?.chain && (
         <div className="oc-table-container" data-testid="option-chain-table">
           <table className="oc-table">
@@ -263,13 +240,11 @@ export default function OptionChain() {
                 <th colSpan={6} className="oc-header-puts">PUTS (PE)</th>
               </tr>
               <tr>
-                {ceColumns.map((col) => (
+                {["OI","Chg OI","Volume","IV","LTP","Chg"].map((col) => (
                   <th key={`ce-${col}`} className="oc-th-ce">{col}</th>
                 ))}
-                <th className="oc-th-strike">
-                  <ArrowUpDown className="w-3 h-3 inline mr-1" />Price
-                </th>
-                {peColumns.map((col) => (
+                <th className="oc-th-strike"><ArrowUpDown className="w-3 h-3 inline mr-1" />Price</th>
+                {["Chg","LTP","IV","Volume","Chg OI","OI"].map((col) => (
                   <th key={`pe-${col}`} className="oc-th-pe">{col}</th>
                 ))}
               </tr>
@@ -279,40 +254,37 @@ export default function OptionChain() {
                 const isATM = row.is_atm;
                 const itm_ce = row.is_itm_ce;
                 const itm_pe = row.is_itm_pe;
-
                 return (
-                  <tr
-                    key={row.strike}
-                    ref={isATM ? atmRef : null}
-                    className={`oc-row ${isATM ? "oc-row-atm" : ""}`}
-                    data-testid={`strike-${row.strike}`}
-                  >
-                    <td className={`oc-td-ce ${itm_ce ? "oc-itm" : ""}`}>{formatOI(row.ce?.oi)}</td>
-                    <td className={`oc-td-ce ${itm_ce ? "oc-itm" : ""} ${row.ce?.oi_change > 0 ? "text-green-400" : row.ce?.oi_change < 0 ? "text-red-400" : ""}`}>
+                  <tr key={row.strike} ref={isATM ? atmRef : null} className={`oc-row ${isATM ? "oc-row-atm" : ""}`} data-testid={`strike-${row.strike}`}>
+                    {/* CE — green tinted */}
+                    <td className={`oc-td-ce ${itm_ce ? "oc-itm-ce" : ""}`}>{formatOI(row.ce?.oi)}</td>
+                    <td className={`oc-td-ce ${itm_ce ? "oc-itm-ce" : ""} ${row.ce?.oi_change > 0 ? "text-green-400" : row.ce?.oi_change < 0 ? "text-red-400" : ""}`}>
                       {row.ce?.oi_change ? formatOI(row.ce.oi_change) : "—"}
                     </td>
-                    <td className={`oc-td-ce ${itm_ce ? "oc-itm" : ""}`}>{formatOI(row.ce?.volume)}</td>
-                    <td className={`oc-td-ce ${itm_ce ? "oc-itm" : ""}`}>{row.ce?.iv ? formatNum(row.ce.iv, 1) : "—"}</td>
-                    <td className={`oc-td-ce oc-ltp ${itm_ce ? "oc-itm" : ""}`}>{formatPrice(row.ce?.ltp)}</td>
-                    <td className={`oc-td-ce ${itm_ce ? "oc-itm" : ""} ${row.ce?.change > 0 ? "text-green-400" : row.ce?.change < 0 ? "text-red-400" : ""}`}>
+                    <td className={`oc-td-ce ${itm_ce ? "oc-itm-ce" : ""}`}>{formatOI(row.ce?.volume)}</td>
+                    <td className={`oc-td-ce ${itm_ce ? "oc-itm-ce" : ""}`}>{formatIV(row.ce?.iv)}</td>
+                    <td className={`oc-td-ce oc-ltp-ce ${itm_ce ? "oc-itm-ce" : ""}`}>{formatPrice(row.ce?.ltp)}</td>
+                    <td className={`oc-td-ce ${itm_ce ? "oc-itm-ce" : ""} ${row.ce?.change > 0 ? "text-green-400" : row.ce?.change < 0 ? "text-red-400" : ""}`}>
                       {row.ce?.change ? formatPrice(row.ce.change) : "—"}
                     </td>
 
+                    {/* Strike */}
                     <td className={`oc-td-strike ${isATM ? "oc-atm-strike" : ""}`}>
                       {row.strike.toLocaleString("en-IN")}
                       {isATM && <span className="oc-atm-badge">ATM</span>}
                     </td>
 
-                    <td className={`oc-td-pe ${itm_pe ? "oc-itm" : ""} ${row.pe?.change > 0 ? "text-green-400" : row.pe?.change < 0 ? "text-red-400" : ""}`}>
+                    {/* PE — red tinted */}
+                    <td className={`oc-td-pe ${itm_pe ? "oc-itm-pe" : ""} ${row.pe?.change > 0 ? "text-green-400" : row.pe?.change < 0 ? "text-red-400" : ""}`}>
                       {row.pe?.change ? formatPrice(row.pe.change) : "—"}
                     </td>
-                    <td className={`oc-td-pe oc-ltp ${itm_pe ? "oc-itm" : ""}`}>{formatPrice(row.pe?.ltp)}</td>
-                    <td className={`oc-td-pe ${itm_pe ? "oc-itm" : ""}`}>{row.pe?.iv ? formatNum(row.pe.iv, 1) : "—"}</td>
-                    <td className={`oc-td-pe ${itm_pe ? "oc-itm" : ""}`}>{formatOI(row.pe?.volume)}</td>
-                    <td className={`oc-td-pe ${itm_pe ? "oc-itm" : ""} ${row.pe?.oi_change > 0 ? "text-green-400" : row.pe?.oi_change < 0 ? "text-red-400" : ""}`}>
+                    <td className={`oc-td-pe oc-ltp-pe ${itm_pe ? "oc-itm-pe" : ""}`}>{formatPrice(row.pe?.ltp)}</td>
+                    <td className={`oc-td-pe ${itm_pe ? "oc-itm-pe" : ""}`}>{formatIV(row.pe?.iv)}</td>
+                    <td className={`oc-td-pe ${itm_pe ? "oc-itm-pe" : ""}`}>{formatOI(row.pe?.volume)}</td>
+                    <td className={`oc-td-pe ${itm_pe ? "oc-itm-pe" : ""} ${row.pe?.oi_change > 0 ? "text-green-400" : row.pe?.oi_change < 0 ? "text-red-400" : ""}`}>
                       {row.pe?.oi_change ? formatOI(row.pe.oi_change) : "—"}
                     </td>
-                    <td className={`oc-td-pe ${itm_pe ? "oc-itm" : ""}`}>{formatOI(row.pe?.oi)}</td>
+                    <td className={`oc-td-pe ${itm_pe ? "oc-itm-pe" : ""}`}>{formatOI(row.pe?.oi)}</td>
                   </tr>
                 );
               })}
