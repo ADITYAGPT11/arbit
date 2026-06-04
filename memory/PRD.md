@@ -55,6 +55,15 @@ Build a production-grade Real-Time Multi-Exchange Arbitrage & F&O Analytics Plat
 - Adaptive summary cards (3 mobile, 5 desktop)
 - Touch-friendly select controls
 
+### UX Improvements (DONE — June 2026)
+- Option chain banner: large bold symbol + blue expiry badge + spot price
+- Labeled dropdowns (UNDERLYING, EXPIRY, STRIKES) for clarity
+- CE = Green, PE = Red throughout (headers, LTP, ITM tints, summary bar)
+- Dashboard arbitrage: full-width side-by-side NSE vs BSE cards
+- BUY/SELL labels with green/red border tinting per exchange
+- Cost breakdown: Gross Spread, Transaction Cost, Slippage (0.02%), Net Profit/Share
+- Net profit color-coded green (profitable) / red (unprofitable)
+
 ## Pending / Backlog
 
 ### P0
