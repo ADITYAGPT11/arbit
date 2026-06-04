@@ -1,11 +1,11 @@
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../App";
 import BrokerStatus from "./BrokerStatus";
 import {
   LayoutDashboard,
   ArrowLeftRight,
   TrendingUp,
-  BarChart3,
   Shield,
   Bell,
   History,
@@ -17,6 +17,8 @@ import {
   LineChart,
   User,
   Grid3x3,
+  Menu,
+  X,
 } from "lucide-react";
 
 const navItems = [
@@ -36,25 +38,69 @@ const navItems = [
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
     navigate("/dashboard");
+    setSidebarOpen(false);
   };
 
   const handleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     const redirectUrl = window.location.origin + "/dashboard";
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
+  const closeSidebar = () => setSidebarOpen(false);
+
+  // Current page label for mobile header
+  const currentPage = navItems.find((i) => location.pathname.startsWith(i.path))?.label || "Dashboard";
+
   return (
     <div className="flex min-h-screen bg-[#0a0a0a]">
+      {/* Mobile Overlay */}
+      {sidebarOpen && (
+        <div
+          className="sidebar-overlay"
+          onClick={closeSidebar}
+          data-testid="sidebar-overlay"
+        />
+      )}
+
+      {/* Mobile Header */}
+      <header className="mobile-header" data-testid="mobile-header">
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="mobile-menu-btn"
+          data-testid="mobile-menu-btn"
+          aria-label="Toggle menu"
+        >
+          {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        </button>
+        <div className="mobile-header-logo" data-testid="mobile-logo">
+          ARBIT<span className="text-white">PRO</span>
+        </div>
+        <span className="mobile-header-page">{currentPage}</span>
+      </header>
+
       {/* Sidebar */}
-      <aside className="sidebar" data-testid="sidebar">
+      <aside
+        className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}
+        data-testid="sidebar"
+      >
         <div className="sidebar-header">
-          <div className="sidebar-logo" data-testid="logo">
-            ARBIT<span className="text-white">PRO</span>
+          <div className="flex items-center justify-between">
+            <div className="sidebar-logo" data-testid="logo">
+              ARBIT<span className="text-white">PRO</span>
+            </div>
+            <button
+              onClick={closeSidebar}
+              className="sidebar-close-btn"
+              aria-label="Close menu"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
           <div className="text-xs text-zinc-500 mt-1">Indian Markets</div>
         </div>
@@ -64,6 +110,7 @@ export default function Layout() {
             <NavLink
               key={item.path}
               to={item.path}
+              onClick={closeSidebar}
               className={({ isActive }) =>
                 `nav-item ${isActive ? "active" : ""} ${!item.public && !user ? "opacity-60" : ""}`
               }
@@ -72,25 +119,22 @@ export default function Layout() {
               <item.icon className="nav-icon" />
               <span>{item.label}</span>
               {!item.public && !user && (
-                <span className="ml-auto text-xs text-zinc-500">🔒</span>
+                <span className="ml-auto text-xs text-zinc-500">
+                  <Bell className="w-3 h-3" />
+                </span>
               )}
             </NavLink>
           ))}
         </nav>
 
-        {/* Broker Connection Status */}
         <BrokerStatus />
 
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-zinc-800">
+        <div className="sidebar-footer">
           {user ? (
             <>
               <div className="flex items-center gap-3 mb-3">
                 {user.picture ? (
-                  <img
-                    src={user.picture}
-                    alt={user.name}
-                    className="w-8 h-8 rounded-full"
-                  />
+                  <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full" />
                 ) : (
                   <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
                     <User className="w-4 h-4" />

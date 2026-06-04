@@ -162,45 +162,45 @@ export default function Dashboard() {
       )}
 
       {/* Header */}
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Market Dashboard</h1>
-          <p className="text-zinc-500 text-sm">
+          <h1 className="text-xl sm:text-2xl font-bold">Market Dashboard</h1>
+          <p className="text-zinc-500 text-xs sm:text-sm">
             Real-time Indian market overview
             {brokerStatus?.market?.current_time_ist && (
-              <span className="ml-2 text-zinc-600">
+              <span className="ml-2 text-zinc-600 hidden sm:inline">
                 ({brokerStatus.market.current_time_ist})
               </span>
             )}
           </p>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4">
           {/* Data Source Status */}
           <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 rounded-lg border border-zinc-800">
             {brokerStatus?.broker?.is_connected ? (
               <>
-                <Wifi className="w-4 h-4 text-green-500" />
-                <span className="text-xs text-green-500">Angel One Live</span>
+                <Wifi className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-500" />
+                <span className="text-[11px] sm:text-xs text-green-500">Angel One Live</span>
                 {brokerStatus?.market?.is_market_open && (
                   <span className="ml-1 text-[10px] text-green-400 font-bold tracking-wider animate-pulse">LIVE</span>
                 )}
               </>
             ) : dataSource?.session_status?.last_error ? (
               <>
-                <WifiOff className="w-4 h-4 text-red-500" />
-                <span className="text-xs text-red-500">Connection Error</span>
+                <WifiOff className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-500" />
+                <span className="text-[11px] sm:text-xs text-red-500">Error</span>
               </>
             ) : (
               <>
-                <Database className="w-4 h-4 text-yellow-500" />
-                <span className="text-xs text-yellow-500">Simulated Data</span>
+                <Database className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-yellow-500" />
+                <span className="text-[11px] sm:text-xs text-yellow-500">Simulated</span>
                 {dataSource?.angel_one_available && (
                   <button
                     onClick={connectAngelOne}
-                    className="ml-2 text-xs text-blue-500 hover:underline"
+                    className="ml-1 text-[11px] text-blue-500 hover:underline"
                     data-testid="connect-angel-btn"
                   >
-                    Connect Live
+                    Connect
                   </button>
                 )}
               </>
@@ -208,32 +208,31 @@ export default function Dashboard() {
           </div>
           {/* Market Session Badge */}
           {brokerStatus?.market && (
-            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${
+            <div className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg border ${
               brokerStatus.market.is_market_open
                 ? "bg-green-900/20 border-green-900/50 text-green-500"
                 : "bg-zinc-900 border-zinc-800 text-zinc-400"
             }`} data-testid="market-session-badge">
-              <Activity className="w-3.5 h-3.5" />
-              <span className="text-xs font-medium">{brokerStatus.market.session_label}</span>
+              <Activity className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              <span className="text-[11px] sm:text-xs font-medium">{brokerStatus.market.session_label}</span>
             </div>
           )}
-          <span className="text-xs text-zinc-500">
-            Last updated:{" "}
-            {lastUpdate ? lastUpdate.toLocaleTimeString() : "—"}
+          <span className="text-[10px] sm:text-xs text-zinc-500 hidden sm:inline">
+            {lastUpdate ? lastUpdate.toLocaleTimeString() : ""}
           </span>
           <button
             onClick={fetchData}
-            className="btn btn-secondary flex items-center gap-2"
+            className="btn btn-secondary flex items-center gap-1 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4 py-1.5"
             data-testid="refresh-btn"
           >
-            <RefreshCw className="w-4 h-4" />
-            Refresh
+            <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
       </div>
 
       {/* Indices */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 mb-6">
         {indices.map((index) => (
           <div
             key={index.index}

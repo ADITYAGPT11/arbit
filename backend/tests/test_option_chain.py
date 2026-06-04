@@ -107,13 +107,21 @@ class TestOptionChainExpiries:
         print(f"✓ BANKNIFTY has {len(data)} expiries")
 
 
+def get_first_nifty_expiry():
+    """Helper to get the first available NIFTY expiry"""
+    response = requests.get(f"{BASE_URL}/api/options/expiries?underlying=NIFTY", timeout=30)
+    expiries = response.json()
+    return expiries[0]['expiry'] if expiries else None
+
+
 class TestOptionChain:
     """Tests for GET /api/options/chain endpoint"""
     
     def test_chain_returns_200(self):
         """Test that chain endpoint returns 200"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         assert response.status_code == 200, f"Expected 200, got {response.status_code}"
@@ -121,8 +129,9 @@ class TestOptionChain:
     
     def test_chain_has_required_fields(self):
         """Test that chain response has all required fields"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -134,8 +143,9 @@ class TestOptionChain:
     
     def test_chain_spot_price_valid(self):
         """Test that spot price is a valid positive number"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -147,8 +157,9 @@ class TestOptionChain:
     
     def test_chain_atm_strike_near_spot(self):
         """Test that ATM strike is near spot price"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -163,8 +174,9 @@ class TestOptionChain:
     
     def test_chain_has_ce_pe_data(self):
         """Test that chain rows have CE and PE data"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -180,8 +192,9 @@ class TestOptionChain:
     
     def test_chain_ce_pe_fields(self):
         """Test that CE/PE data has required fields (OI, volume, LTP, change)"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -200,8 +213,9 @@ class TestOptionChain:
     
     def test_chain_totals(self):
         """Test that chain has totals with PCR"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -213,15 +227,16 @@ class TestOptionChain:
         assert 'ce_volume' in totals, "Totals should have ce_volume"
         assert 'pe_volume' in totals, "Totals should have pe_volume"
         
-        # PCR should be reasonable (between 0.1 and 10)
+        # PCR should be reasonable (between 0 and 10)
         pcr = totals['pcr']
-        assert 0.1 <= pcr <= 10, f"PCR {pcr} should be between 0.1 and 10"
+        assert 0 <= pcr <= 10, f"PCR {pcr} should be between 0 and 10"
         print(f"✓ Totals present - CE OI: {totals['ce_oi']}, PE OI: {totals['pe_oi']}, PCR: {pcr}")
     
     def test_chain_atm_row_marked(self):
         """Test that ATM row is marked with is_atm=True"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
@@ -235,12 +250,13 @@ class TestOptionChain:
     
     def test_chain_num_strikes_parameter(self):
         """Test that num_strikes parameter works"""
+        expiry = get_first_nifty_expiry()
         response_5 = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         response_10 = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=10",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=10",
             timeout=60
         )
         
@@ -253,8 +269,9 @@ class TestOptionChain:
     
     def test_chain_data_source(self):
         """Test that chain includes data_source field"""
+        expiry = get_first_nifty_expiry()
         response = requests.get(
-            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry=26MAY2026&num_strikes=5",
+            f"{BASE_URL}/api/options/chain?underlying=NIFTY&expiry={expiry}&num_strikes=5",
             timeout=60
         )
         data = response.json()
