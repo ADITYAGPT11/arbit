@@ -1,74 +1,74 @@
-# Real-Time Multi-Exchange Arbitrage & F&O Analytics Platform
+# ArbitPRO - Indian Markets Arbitrage & F&O Analytics Platform
 
-## Original Problem Statement
-Build a production-grade Real-Time Multi-Exchange Arbitrage & F&O Analytics Platform for Indian Markets supporting NSE, BSE, MCX with cross-exchange arbitrage, F&O analytics, and professional trading desk features.
-
-## User Choices
-- **Data Source**: Simulated real-time data (realistic Indian market values)
-- **Alerts**: Telegram integration
-- **Authentication**: Google OAuth via Emergent (OPTIONAL - platform is PUBLIC)
-- **Database**: MongoDB (performance-focused)
-- **Theme**: Dark trading terminal
+## Problem Statement
+Build a production-grade Real-Time Multi-Exchange Arbitrage & F&O Analytics Platform for Indian Markets (NSE, BSE, MCX). Support NSE/BSE Cash, F&O, Index Derivatives. Arbitrage Engine (Cross-Exchange, Cash & Carry, Synthetic, Calendar Spreads, Statistical). Advanced Performance Analytics Dashboard. Ultra low-latency tick-by-tick processing. User requested: Angel One free API for real-time data, Telegram alerts, Google OAuth, and high performance.
 
 ## Architecture
-- **Backend**: FastAPI (Python) with async processing
-- **Frontend**: React with Recharts, Tailwind CSS
-- **Database**: MongoDB
-- **Auth**: Emergent Google OAuth (optional)
+- **Frontend**: React.js + TailwindCSS + Shadcn UI + Recharts
+- **Backend**: FastAPI + Python (async) + GZip middleware
+- **Database**: MongoDB (configured, minimal usage — live API data primary)
+- **Broker API**: Angel One SmartAPI (live market data, batch API)
+- **Auth**: Emergent-managed Google OAuth
 
-## Core Features Implemented
+## Key Files
+- `/app/backend/server.py` — Main API (1600+ lines, routes + services)
+- `/app/backend/angel_one_service.py` — Angel One session management, batch data
+- `/app/backend/option_chain_service.py` — Instrument master, T-shaped chain builder
+- `/app/frontend/src/components/Layout.jsx` — Responsive sidebar + mobile hamburger
+- `/app/frontend/src/components/BrokerStatus.jsx` — Broker connection status
+- `/app/frontend/src/pages/Dashboard.jsx` — Live market dashboard
+- `/app/frontend/src/pages/OptionChain.jsx` — T-shaped option chain (auto-refresh 5s)
 
-### Public Features (No Login Required)
-1. **Dashboard** - Market overview, indices, F&O stocks, arbitrage opportunities
-2. **Cross-Exchange Arbitrage Scanner** - NSE vs BSE price differences
-3. **Cash & Carry Arbitrage Calculator** - Futures vs Spot mispricing
-4. **Synthetic Futures Arbitrage** - Call-Put parity analysis
-5. **Calendar Spread Analysis** - Near vs Far month futures
-6. **Statistical Arbitrage (Pairs Trading)** - Z-score, correlation, mean reversion
-7. **Performance Analytics** - Sharpe, Sortino, Drawdown, Win Rate, Equity Curve
-8. **Risk Management** - Position Sizing, VaR, Margin Calculator
-9. **Backtesting Module** - Strategy testing with simulated historical data
+## What's Implemented
 
-### Protected Features (Login Required)
-10. **Alerts Configuration** - Telegram alerts for arbitrage opportunities
+### Core Features (DONE)
+- Angel One SmartAPI integration with auto-login, session management
+- Live market indices (NIFTY, BANKNIFTY, FINNIFTY, SENSEX, BANKEX)
+- Live F&O stock prices (NSE + BSE) via batch API
+- Cross-exchange arbitrage scanner (NSE vs BSE)
+- Cash & Carry, Synthetic, Calendar Spread, Statistical arbitrage calculators
+- Performance analytics, risk management, backtesting modules
+- Broker connection status with market session awareness (IST)
+- Google OAuth via Emergent Auth
 
-## User Personas
-- **Quantitative Traders** - Need statistical arbitrage tools
-- **Retail F&O Traders** - Cash & Carry, Synthetic analysis
-- **Institutional Desks** - Multi-exchange arbitrage scanning
-- **Risk Managers** - Position sizing, VaR calculations
+### T-Shaped Option Chain (DONE — June 2026)
+- Real-time option chain with 5-second auto-refresh
+- Instrument master download + indexed lookups (187K instruments)
+- NIFTY, BANKNIFTY, FINNIFTY + 150+ stock options
+- OI, Change in OI, Volume, IV, LTP, Change for CE and PE
+- ATM strike highlighting, PCR calculation
+- Summary bar: Total Call/Put OI, PCR, Volume
 
-## What's Been Implemented (Feb 2026)
-- [x] Full backend with 26+ API endpoints
-- [x] Market data service with realistic simulated prices
-- [x] All arbitrage calculators (5 types)
-- [x] Performance analytics with charts
-- [x] Risk management tools
-- [x] Backtesting engine
-- [x] Google OAuth integration (optional)
-- [x] Dark theme trading terminal UI
-- [x] Public access (no login for analysis tools)
+### Production & HFT Optimizations (DONE — June 2026)
+- GZip response compression (77% reduction)
+- asyncio.to_thread for blocking Angel One API calls
+- In-memory response cache (2s TTL) for option chain polling
+- Indexed instrument master (O(1) lookups vs O(n) scans)
+- Batch API calls to Angel One (50 tokens per request)
 
-## P0 Features (Done)
-- Dashboard with live indices
-- Cross-exchange arbitrage scanner
-- All calculators
-- Performance analytics
+### Mobile Responsive UI (DONE — June 2026)
+- Hamburger menu sidebar toggle below 1024px
+- Slide-in sidebar with overlay + close button
+- Mobile header with logo + page name
+- Responsive grids (2-col mobile, 5-col desktop for indices)
+- Horizontal scroll for option chain table on mobile
+- Adaptive summary cards (3 mobile, 5 desktop)
+- Touch-friendly select controls
 
-## P1 Features (Backlog)
-- Live market data integration (TrueData/DhanHQ API)
-- Telegram bot for alerts (requires bot token)
-- Historical data for backtesting
-- Order execution integration
+## Pending / Backlog
 
-## P2 Features (Future)
-- WebSocket real-time updates
-- Option chain viewer
-- Custom strategy builder
-- Multi-user alert management
+### P0
+- Telegram integration for arbitrage alerts
 
-## Next Tasks
-1. Integrate real market data API when user provides credentials
-2. Set up Telegram bot for production alerts
-3. Add WebSocket for real-time price updates
-4. Implement historical data storage for backtesting
+### P1
+- WebSocket architecture for real-time data (replace REST polling)
+- Deep-dive pages with live data for Cash & Carry, Synthetic, Calendar, Statistical
+- Fix missing OHLC data (Change/Volume columns show "—" for batch LTP)
+
+### P2
+- PostgreSQL migration
+- Backtesting with historical data
+- Advanced Analytics Dashboard (Strategy PnL, Weekday performance)
+
+### Refactoring
+- Split server.py monolith into routes/, services/, models/ modules
