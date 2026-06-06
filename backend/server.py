@@ -105,6 +105,18 @@ except ImportError:
     OPTION_CHAIN_AVAILABLE = False
     logger.warning("Option chain service not available")
 
+# Import IV Analytics Service
+try:
+    from iv_analytics_service import (
+        calculate_iv, calculate_historical_volatility, calculate_iv_rank,
+        calculate_iv_percentile, calculate_max_pain, build_iv_skew,
+        get_atm_iv, detect_iv_signal, INDIA_VIX_TOKEN, INDIA_VIX_EXCHANGE
+    )
+    IV_ANALYTICS_AVAILABLE = True
+except ImportError:
+    IV_ANALYTICS_AVAILABLE = False
+    logger.warning("IV analytics service not available")
+
 
 class MarketDataService:
     """Service to fetch real-time market data from Angel One SmartAPI with fallback to simulated data"""
@@ -1423,6 +1435,209 @@ async def get_option_chain(underlying: str = "NIFTY", expiry: str = None, num_st
     angel = get_angel_service() if ANGEL_ONE_AVAILABLE else None
     result = await asyncio.to_thread(oc_service.build_option_chain, angel, underlying.upper(), expiry, spot_price, num_strikes)
     return result
+
+# ==================== IV ANALYTICS ROUTES ====================
+
+@api_router.get("/iv/dashboard")
+async def get_iv_dashboard(underlying: str = "NIFTY", expiry: str = None, num_strikes: int = 20):
+    """Full IV dashboard for options sellers — ATM IV, IV Rank, Percentile, HV, VIX, signals"""
+    if not IV_ANALYTICS_AVAILABLE or not OPTION_CHAIN_AVAILABLE:
+        raise HTTPException(status_code=400, detail="IV analytics not available")
+
+    oc_service = get_option_chain_service()
+    u = underlying.upper()
+
+    # Get expiry
+    if not expiry:
+        expiries = oc_service.get_expiries(u)
+        if expiries:
+            expiry = expiries[0]["expiry"]
+        else:
+            raise HTTPException(status_code=404, detail=f"No expiries for {u}")
+
+    # Days to expiry
+    try:
+        exp_dt = datetime.strptime(expiry, "%d%b%Y")
+        days_to_expiry = max(1, (exp_dt - datetime.now()).days)
+    except ValueError:
+        days_to_expiry = 30
+
+    # Get spot price and option chain
+    spot_price = 0
+    angel = get_angel_service() if ANGEL_ONE_AVAILABLE else None
+
+    if angel and angel.is_connected():
+        def _fetch():
+            from angel_one_service import INDEX_TOKENS as IDX, SYMBOL_TOKENS as SYM
+            sp = 0
+            if u in IDX:
+                try:
+                    data = angel.smart_api.getMarketData(mode="LTP", exchangeTokens={IDX[u]["exchange"]: [IDX[u]["token"]]})
+                    if data.get("status") and data.get("data", {}).get("fetched"):
+                        sp = float(data["data"]["fetched"][0].get("ltp", 0))
+                except Exception as e:
+                    logger.error(f"IV spot fetch error: {e}")
+            elif u in SYM:
+                try:
+                    data = angel.smart_api.getMarketData(mode="LTP", exchangeTokens={"NSE": [SYM[u]["nse_token"]]})
+                    if data.get("status") and data.get("data", {}).get("fetched"):
+                        sp = float(data["data"]["fetched"][0].get("ltp", 0))
+                except Exception as e:
+                    logger.error(f"IV spot fetch error: {e}")
+            return sp
+        spot_price = await asyncio.to_thread(_fetch)
+
+    if spot_price <= 0:
+        fallbacks = {"NIFTY": 24000, "BANKNIFTY": 50000, "FINNIFTY": 22000}
+        spot_price = fallbacks.get(u, 1000)
+
+    # Build chain
+    chain_result = await asyncio.to_thread(oc_service.build_option_chain, angel, u, expiry, spot_price, num_strikes)
+    chain_data = chain_result.get("chain", [])
+
+    # ATM IV
+    atm_iv = get_atm_iv(chain_data, spot_price, days_to_expiry)
+
+    # IV Skew
+    iv_skew = build_iv_skew(chain_data, spot_price, days_to_expiry)
+
+    # Max Pain
+    max_pain = calculate_max_pain(chain_data)
+
+    # Fetch India VIX
+    vix_value = None
+    if angel and angel.is_connected():
+        def _fetch_vix():
+            try:
+                data = angel.smart_api.getMarketData(mode="LTP", exchangeTokens={INDIA_VIX_EXCHANGE: [INDIA_VIX_TOKEN]})
+                if data.get("status") and data.get("data", {}).get("fetched"):
+                    return float(data["data"]["fetched"][0].get("ltp", 0))
+            except Exception as e:
+                logger.error(f"VIX fetch error: {e}")
+            return None
+        vix_value = await asyncio.to_thread(_fetch_vix)
+
+    # Historical data from MongoDB
+    iv_history = []
+    hv = None
+    iv_rank = None
+    iv_percentile = None
+
+    try:
+        # Get stored IV snapshots (last 252 trading days ~ 1 year)
+        snapshots = await db.iv_snapshots.find(
+            {"underlying": u},
+            {"_id": 0, "atm_iv": 1, "date": 1}
+        ).sort("date", -1).limit(252).to_list(252)
+
+        if snapshots:
+            iv_history = [s["atm_iv"] for s in snapshots if s.get("atm_iv") and s["atm_iv"] > 0]
+
+        if atm_iv and iv_history:
+            iv_rank = calculate_iv_rank(atm_iv, iv_history)
+            iv_percentile = calculate_iv_percentile(atm_iv, iv_history)
+
+        # Historical Volatility from price snapshots
+        price_snapshots = await db.price_snapshots.find(
+            {"underlying": u},
+            {"_id": 0, "close": 1}
+        ).sort("date", -1).limit(31).to_list(31)
+
+        if price_snapshots:
+            prices = [s["close"] for s in reversed(price_snapshots) if s.get("close")]
+            hv_val = calculate_historical_volatility(prices, window=20)
+            if hv_val:
+                hv = round(hv_val * 100, 2)
+    except Exception as e:
+        logger.warning(f"Historical IV data fetch error: {e}")
+
+    # Store today's snapshot (upsert)
+    if atm_iv and atm_iv > 0:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            await db.iv_snapshots.update_one(
+                {"underlying": u, "date": today_str},
+                {"$set": {
+                    "underlying": u,
+                    "date": today_str,
+                    "atm_iv": atm_iv,
+                    "vix": vix_value,
+                    "spot_price": spot_price,
+                    "expiry": expiry,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            logger.warning(f"IV snapshot save error: {e}")
+
+    # Store price snapshot
+    if spot_price > 0:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            await db.price_snapshots.update_one(
+                {"underlying": u, "date": today_str},
+                {"$set": {
+                    "underlying": u,
+                    "date": today_str,
+                    "close": spot_price,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            logger.warning(f"Price snapshot save error: {e}")
+
+    # Seller signal
+    signal = detect_iv_signal(iv_rank, iv_percentile, atm_iv, hv)
+
+    return {
+        "underlying": u,
+        "expiry": expiry,
+        "days_to_expiry": days_to_expiry,
+        "spot_price": spot_price,
+        "atm_iv": atm_iv,
+        "iv_rank": iv_rank,
+        "iv_percentile": iv_percentile,
+        "historical_volatility": hv,
+        "india_vix": vix_value,
+        "iv_history_count": len(iv_history),
+        "seller_signal": signal,
+        "max_pain": max_pain,
+        "iv_skew": iv_skew,
+        "totals": chain_result.get("totals"),
+        "atm_strike": chain_result.get("atm_strike"),
+        "data_source": chain_result.get("data_source"),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@api_router.get("/iv/skew")
+async def get_iv_skew(underlying: str = "NIFTY", expiry: str = None, num_strikes: int = 20):
+    """Get IV skew across strikes for visualization"""
+    # Reuse the dashboard endpoint's logic for just the skew
+    dashboard = await get_iv_dashboard(underlying, expiry, num_strikes)
+    return {
+        "underlying": dashboard["underlying"],
+        "expiry": dashboard["expiry"],
+        "spot_price": dashboard["spot_price"],
+        "atm_strike": dashboard["atm_strike"],
+        "atm_iv": dashboard["atm_iv"],
+        "skew": dashboard["iv_skew"],
+    }
+
+
+@api_router.get("/iv/max-pain")
+async def get_max_pain(underlying: str = "NIFTY", expiry: str = None):
+    """Get max pain strike with pain distribution"""
+    dashboard = await get_iv_dashboard(underlying, expiry, 25)
+    return {
+        "underlying": dashboard["underlying"],
+        "expiry": dashboard["expiry"],
+        "spot_price": dashboard["spot_price"],
+        "max_pain": dashboard["max_pain"],
+    }
+
 
 # ==================== ANALYTICS ROUTES ====================
 

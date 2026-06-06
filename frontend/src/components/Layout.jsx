@@ -19,11 +19,13 @@ import {
   Grid3x3,
   Menu,
   X,
+  Gauge,
 } from "lucide-react";
 
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, public: true },
   { path: "/option-chain", label: "Option Chain", icon: Grid3x3, public: true },
+  { path: "/iv-analytics", label: "IV Analytics", icon: Gauge, public: true },
   { path: "/arbitrage", label: "Cross-Exchange Arb", icon: ArrowLeftRight, public: true },
   { path: "/cash-carry", label: "Cash & Carry", icon: Calculator, public: true },
   { path: "/synthetic", label: "Synthetic Futures", icon: GitCompare, public: true },

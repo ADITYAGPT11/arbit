@@ -16,6 +16,7 @@ import RiskManagement from "./pages/RiskManagement";
 import AlertsConfig from "./pages/AlertsConfig";
 import Backtesting from "./pages/Backtesting";
 import OptionChain from "./pages/OptionChain";
+import IVAnalytics from "./pages/IVAnalytics";
 import Login from "./pages/Login";
 import Layout from "./components/Layout";
 
@@ -159,6 +160,7 @@ function AppRouter() {
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="option-chain" element={<OptionChain />} />
+        <Route path="iv-analytics" element={<IVAnalytics />} />
         <Route path="arbitrage" element={<ArbitrageScanner />} />
         <Route path="cash-carry" element={<CashCarryArbitrage />} />
         <Route path="synthetic" element={<SyntheticArbitrage />} />
