@@ -55,6 +55,19 @@ Build a production-grade Real-Time Multi-Exchange Arbitrage & F&O Analytics Plat
 - Adaptive summary cards (3 mobile, 5 desktop)
 - Touch-friendly select controls
 
+### IV Analytics — Options Seller's Toolkit (DONE — June 2026)
+- Black-Scholes IV calculator (Newton-Raphson + Brent fallback, verified)
+- ATM Implied Volatility computed from live option prices
+- India VIX live feed (token 99926017 from Angel One)
+- IV Rank: (Current IV - 52w Low) / (52w High - 52w Low) × 100
+- IV Percentile: % of days where IV was below current
+- Historical Volatility (HV): 20-day log returns, annualized √252
+- IV Skew chart: CE IV (green) vs PE IV (red) across strikes
+- Max Pain calculator: strike where total option buyer losses are maximized
+- Seller Signal engine: SELL_PREMIUM / AVOID_SELLING / NEUTRAL with reasoning
+- Daily IV & price snapshots stored in MongoDB (builds over time)
+- Options Seller's Guide with educational reference cards
+
 ### UX Improvements (DONE — June 2026)
 - Option chain banner: large bold symbol + blue expiry badge + spot price
 - Labeled dropdowns (UNDERLYING, EXPIRY, STRIKES) for clarity
