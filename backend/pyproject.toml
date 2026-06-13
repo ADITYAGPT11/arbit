@@ -1,0 +1,56 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = '''
+/(
+    \.venv
+  | build
+  | dist
+  | __pycache__
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_third_party = ["fastapi", "pydantic", "numpy", "scipy", "motor", "httpx", "SmartApi", "pyotp"]
+known_first_party = ["services", "routes", "models", "core", "tasks", "tests"]
+skip_glob = ["**/.venv/**", "**/build/**", "**/__pycache__/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-ra --strict-markers --tb=short"
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["services", "routes", "models", "core"]
+omit = ["tests/*", "**/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict_optional = True
+warn_unused_ignores = True
+warn_redundant_casts = True
+ignore_missing_imports = True
+exclude = [
+    "tests/",
+    ".venv/",
+    "build/",
+]
