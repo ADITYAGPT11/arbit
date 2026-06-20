@@ -97,6 +97,19 @@ except ImportError:
     ANGEL_ONE_AVAILABLE = False
     logger.warning("Angel One service not available, using simulated data")
 
+# Import extensible brokers registry (Publisher Login / OAuth flow per user)
+try:
+    from brokers import (
+        BROKER_REGISTRY,
+        get_broker as _get_broker_provider,
+        list_brokers as _list_brokers,
+        session_manager as broker_session_manager,
+    )
+    BROKERS_MODULE_AVAILABLE = True
+except ImportError as _e:
+    BROKERS_MODULE_AVAILABLE = False
+    logger.warning("Brokers module not available: %s", _e)
+
 # Import Option Chain Service
 try:
     from option_chain_service import get_option_chain_service
@@ -1208,6 +1221,154 @@ async def reset_angel_one():
         "message": "Credentials reloaded" + (" and login successful" if success else " but login failed"),
         "session_status": angel.get_session_status()
     }
+
+# ==================== BROKER CONNECT (Per-user, in-memory, no DB, no .env user creds) ====================
+
+@api_router.get("/brokers/list")
+async def brokers_list(request: Request):
+    """List all brokers in the registry with their static info + per-user connection status."""
+    if not BROKERS_MODULE_AVAILABLE:
+        return {"brokers": [], "available": False}
+
+    user = await get_current_user(request)
+    items = []
+    for info in _list_brokers():
+        item = dict(info)
+        item["is_connected"] = False
+        item["connected_at"] = None
+        item["expires_at"] = None
+        item["profile"] = None
+        if user:
+            sess = broker_session_manager.get(user.user_id, info["broker_id"])
+            if sess:
+                pub = sess.to_public_dict()
+                item["is_connected"] = pub["is_connected"]
+                item["connected_at"] = pub["connected_at"]
+                item["expires_at"] = pub["expires_at"]
+                item["profile"] = pub["profile"]
+        items.append(item)
+    return {"available": True, "brokers": items, "authenticated": user is not None}
+
+
+@api_router.post("/brokers/{broker_id}/connect")
+async def broker_connect(broker_id: str, request: Request):
+    """
+    Begin a broker connection. Returns the broker's publisher-login URL that
+    the frontend should open (new tab / window).
+    """
+    if not BROKERS_MODULE_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Brokers module not available")
+
+    user = await require_auth(request)
+
+    try:
+        broker = _get_broker_provider(broker_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown broker: {broker_id}")
+
+    if broker.coming_soon or not broker.enabled:
+        raise HTTPException(status_code=400, detail=f"{broker.display_name} integration is coming soon")
+
+    if not broker.is_platform_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{broker.display_name} is not yet configured on this server. "
+                "The ARBIT administrator must set the platform API key."
+            ),
+        )
+
+    state = broker_session_manager.create_state(user.user_id, broker_id)
+    try:
+        login_url = broker.build_login_url(state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build login URL: {e}")
+
+    return {
+        "broker_id": broker_id,
+        "display_name": broker.display_name,
+        "login_url": login_url,
+        "state": state,
+        "expires_in_seconds": int(broker_session_manager.STATE_TTL.total_seconds()),
+    }
+
+
+@api_router.get("/brokers/{broker_id}/callback")
+async def broker_callback(broker_id: str, request: Request):
+    """
+    Public redirect-callback endpoint that the broker hits after user login.
+    Validates `state`, finalises the session, then redirects user back to the frontend.
+    """
+    if not BROKERS_MODULE_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Brokers module not available")
+
+    params = dict(request.query_params)
+    state = params.get("state", "")
+
+    # Build a frontend redirect URL. We come back to the same origin (ingress will route
+    # non-/api paths to the frontend).
+    def _front_redirect(status: str, message: str = "", broker: str = broker_id):
+        from urllib.parse import urlencode as _ue
+        from fastapi.responses import RedirectResponse as _RR
+        qs = _ue({"status": status, "broker": broker, "message": message[:300]})
+        return _RR(url=f"/connect-broker?{qs}", status_code=302)
+
+    if not state:
+        return _front_redirect("error", "Missing state token")
+
+    mapped = broker_session_manager.consume_state(state)
+    if not mapped:
+        return _front_redirect("error", "State token expired or invalid. Please try again.")
+    user_id, mapped_broker_id = mapped
+    if mapped_broker_id != broker_id:
+        return _front_redirect("error", "Broker mismatch on callback")
+
+    try:
+        broker = _get_broker_provider(broker_id)
+    except KeyError:
+        return _front_redirect("error", f"Unknown broker: {broker_id}")
+
+    try:
+        session = broker.handle_callback(params)
+        session.user_id = user_id
+        broker_session_manager.set(session)
+    except Exception as e:
+        logger.exception("Broker callback failed for %s", broker_id)
+        return _front_redirect("error", str(e))
+
+    return _front_redirect("success", "Connected successfully")
+
+
+@api_router.get("/brokers/sessions")
+async def broker_sessions(request: Request):
+    """List all active broker sessions for the current authenticated user."""
+    if not BROKERS_MODULE_AVAILABLE:
+        return {"sessions": []}
+    user = await require_auth(request)
+    sessions = broker_session_manager.list_for_user(user.user_id)
+    return {"sessions": [s.to_public_dict() for s in sessions]}
+
+
+@api_router.post("/brokers/{broker_id}/disconnect")
+async def broker_disconnect(broker_id: str, request: Request):
+    """Disconnect a broker for the current user (clears in-memory session)."""
+    if not BROKERS_MODULE_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Brokers module not available")
+    user = await require_auth(request)
+    try:
+        broker = _get_broker_provider(broker_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown broker: {broker_id}")
+
+    sess = broker_session_manager.get(user.user_id, broker_id)
+    if sess:
+        try:
+            broker.disconnect(sess)
+        except Exception:
+            pass
+        broker_session_manager.delete(user.user_id, broker_id)
+    return {"status": "ok", "message": f"Disconnected from {broker.display_name}"}
+
 
 # ==================== BROKER STATUS ====================
 
