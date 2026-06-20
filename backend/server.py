@@ -1277,13 +1277,26 @@ async def broker_connect(broker_id: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build login URL: {e}")
 
-    return {
+    # Some brokers (e.g. Angel One) do NOT echo `state` back in the callback.
+    # Set a short-lived HttpOnly cookie as a fallback so we can recover (user_id, broker_id).
+    from fastapi.responses import JSONResponse as _JR
+    resp = _JR({
         "broker_id": broker_id,
         "display_name": broker.display_name,
         "login_url": login_url,
         "state": state,
         "expires_in_seconds": int(broker_session_manager.STATE_TTL.total_seconds()),
-    }
+    })
+    resp.set_cookie(
+        key=f"broker_state_{broker_id}",
+        value=state,
+        max_age=int(broker_session_manager.STATE_TTL.total_seconds()),
+        httponly=True,
+        secure=True,
+        samesite="lax",  # MUST be lax (not strict) so it survives the cross-site redirect back
+        path="/",
+    )
+    return resp
 
 
 @api_router.get("/brokers/{broker_id}/callback")
@@ -1295,8 +1308,13 @@ async def broker_callback(broker_id: str, request: Request):
     if not BROKERS_MODULE_AVAILABLE:
         raise HTTPException(status_code=400, detail="Brokers module not available")
 
+    logger.info(
+        "Broker callback hit: broker=%s query_params=%s cookies=%s",
+        broker_id, dict(request.query_params), {k: "***" for k in request.cookies.keys()}
+    )
+
     params = dict(request.query_params)
-    state = params.get("state", "")
+    state = params.get("state", "") or request.cookies.get(f"broker_state_{broker_id}", "")
 
     # Build a frontend redirect URL. We come back to the same origin (ingress will route
     # non-/api paths to the frontend).
@@ -1304,10 +1322,13 @@ async def broker_callback(broker_id: str, request: Request):
         from urllib.parse import urlencode as _ue
         from fastapi.responses import RedirectResponse as _RR
         qs = _ue({"status": status, "broker": broker, "message": message[:300]})
-        return _RR(url=f"/connect-broker?{qs}", status_code=302)
+        r = _RR(url=f"/connect-broker?{qs}", status_code=302)
+        r.delete_cookie(f"broker_state_{broker}", path="/")
+        return r
 
     if not state:
-        return _front_redirect("error", "Missing state token")
+        logger.warning("Broker callback received with NO state (query or cookie). params=%s", list(params.keys()))
+        return _front_redirect("error", "Missing state token (Angel One did not return state and cookie was lost). Please retry the connect from the same browser tab.")
 
     mapped = broker_session_manager.consume_state(state)
     if not mapped:

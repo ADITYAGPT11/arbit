@@ -37,7 +37,7 @@ class AngelOneProvider(BrokerProvider):
     logo_url = "https://www.angelone.in/assets/images/logo.svg"
     website = "https://www.angelone.in"
 
-    LOGIN_BASE_URL = "https://smartapi.angelbroking.com/publisher-login"
+    LOGIN_BASE_URL = "https://smartapi.angelone.in/publisher-login"
 
     def __init__(self) -> None:
         # Re-read at every access so users editing .env don't need to restart code
