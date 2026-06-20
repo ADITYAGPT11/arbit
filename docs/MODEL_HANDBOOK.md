@@ -399,18 +399,28 @@ Based on the user's question about managing free usage across models:
 ## 12. Quick Reference: Common Commands
 
 ```bash
-# Backend
+# One-click start (PowerShell)
+cd D:/arbit
+powershell -ExecutionPolicy Bypass -File scripts/start.ps1
+
+# Stop servers
+powershell -ExecutionPolicy Bypass -File scripts/stop.ps1
+
+# Backend (manual)
 cd D:/arbit/backend
-uvicorn server:app --reload --port 8000          # Start server
+.venv/Scripts/activate
+uvi...r:app --reload --port 8000
+
+# Tests
+cd D:/arbit/backend
 python -m pytest tests/ -v                        # Run all tests
 python -m pytest tests/test_iv_analytics.py -v    # Single test file
 flake8 .                                          # Lint check
-black --check .                                   # Format check
 
-# Frontend
+# Frontend (manual)
 cd D:/arbit/frontend
-yarn start                                        # Start dev server
-yarn build                                        # Production build
+npm start                                         # Start dev server
+npm run build                                     # Production build
 
 # Git
 cd D:/arbit

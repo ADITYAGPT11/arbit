@@ -39,6 +39,8 @@
 - [x] [infra] Start backend on :8000 (health check green) — 2026-06-14
 - [x] [infra] Start frontend on :3000 (compiled successfully) — 2026-06-14
 - [x] [infra] Local MongoDB connected at localhost:27017/arbitpro — 2026-06-14
+- [x] [scripts] Create `scripts/start.ps1` — one-click server launcher with prerequisite checks — 2026-06-14
+- [x] [scripts] Create `scripts/stop.ps1` — one-click server stopper — 2026-06-14
 
 ## ⚡ Tier 2 — Next up
 

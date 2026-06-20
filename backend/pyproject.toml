@@ -39,16 +39,16 @@ fail_under = 70
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
-    "if __name__ == .__main__.:",
+    "if __name__ == '.__main__.':",
     "raise NotImplementedError",
 ]
 
 [tool.mypy]
 python_version = "3.11"
-strict_optional = True
-warn_unused_ignores = True
-warn_redundant_casts = True
-ignore_missing_imports = True
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
 exclude = [
     "tests/",
     ".venv/",
