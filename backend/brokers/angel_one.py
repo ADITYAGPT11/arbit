@@ -70,6 +70,10 @@ class AngelOneProvider(BrokerProvider):
                 "Set ARBIT_ANGEL_API_KEY in backend/.env"
             )
         params = {"api_key": self.api_key, "state": state}
+        # Some Angel One publisher apps require redirect_url to be sent in the URL too,
+        # not only registered on the dashboard. Send both if configured.
+        if self.redirect_url:
+            params["redirect_url"] = self.redirect_url
         return f"{self.LOGIN_BASE_URL}?{urlencode(params)}"
 
     def handle_callback(self, params: Dict[str, Any]) -> BrokerSession:
