@@ -20,6 +20,7 @@ import {
   Menu,
   X,
   Gauge,
+  Plug,
 } from "lucide-react";
 
 const navItems = [
@@ -35,6 +36,7 @@ const navItems = [
   { path: "/risk", label: "Risk Management", icon: Shield, public: true },
   { path: "/alerts", label: "Alerts", icon: Bell, public: false },
   { path: "/backtest", label: "Backtesting", icon: History, public: true },
+  { path: "/connect-broker", label: "Connect Broker", icon: Plug, public: true },
 ];
 
 export default function Layout() {

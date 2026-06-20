@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
+import { useNavigate } from "react-router-dom";
 import { API } from "../App";
 import {
   Wifi,
@@ -10,11 +11,10 @@ import {
   Radio,
   Power,
 } from "lucide-react";
-import { toast } from "sonner";
 
 export default function BrokerStatus() {
+  const navigate = useNavigate();
   const [status, setStatus] = useState(null);
-  const [connecting, setConnecting] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -31,18 +31,8 @@ export default function BrokerStatus() {
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
-  const handleConnect = async () => {
-    setConnecting(true);
-    try {
-      toast.info("Connecting to Angel One...");
-      await axios.post(`${API}/market/angel-one/login`);
-      toast.success("Broker connected!");
-      await fetchStatus();
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Connection failed");
-    } finally {
-      setConnecting(false);
-    }
+  const handleConnect = () => {
+    navigate("/connect-broker");
   };
 
   if (!status) {
@@ -90,15 +80,11 @@ export default function BrokerStatus() {
         ) : (
           <button
             onClick={handleConnect}
-            disabled={connecting}
             className="broker-connect-btn"
             data-testid="broker-connect-btn"
+            title="Connect a broker"
           >
-            {connecting ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Power className="w-3.5 h-3.5" />
-            )}
+            <Power className="w-3.5 h-3.5" />
           </button>
         )}
       </div>
@@ -142,7 +128,7 @@ export default function BrokerStatus() {
       )}
 
       {/* Error State */}
-      {broker.last_error && (
+      {broker.last_error && !broker.last_error.toLowerCase().includes("direct login disabled") && (
         <div className="broker-error" data-testid="broker-error">
           <span className="text-[10px] text-red-400 leading-tight">
             {broker.last_error.length > 60
@@ -153,15 +139,14 @@ export default function BrokerStatus() {
       )}
 
       {/* Not Connected - Prompt */}
-      {!isConnected && !broker.last_error && (
+      {!isConnected && (
         <button
           onClick={handleConnect}
-          disabled={connecting}
           className="broker-connect-full-btn"
           data-testid="broker-connect-full-btn"
         >
           <Plug className="w-3.5 h-3.5" />
-          {connecting ? "Connecting..." : "Connect Broker"}
+          Connect Broker
         </button>
       )}
     </div>

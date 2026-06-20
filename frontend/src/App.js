@@ -17,6 +17,7 @@ import AlertsConfig from "./pages/AlertsConfig";
 import Backtesting from "./pages/Backtesting";
 import OptionChain from "./pages/OptionChain";
 import IVAnalytics from "./pages/IVAnalytics";
+import ConnectBroker from "./pages/ConnectBroker";
 import Login from "./pages/Login";
 import Layout from "./components/Layout";
 
@@ -169,6 +170,7 @@ function AppRouter() {
         <Route path="performance" element={<PerformanceAnalytics />} />
         <Route path="risk" element={<RiskManagement />} />
         <Route path="backtest" element={<Backtesting />} />
+        <Route path="connect-broker" element={<ConnectBroker />} />
         {/* Only alerts require login (user-specific) */}
         <Route path="alerts" element={<ProtectedRoute><AlertsConfig /></ProtectedRoute>} />
       </Route>
