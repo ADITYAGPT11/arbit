@@ -190,12 +190,8 @@ class MarketDataService:
         if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
             try:
                 angel = get_angel_service()
-                
-                # Ensure we have a valid session
-                if not angel.auth_token:
-                    angel.login()
-                
-                if angel.auth_token:
+
+                if angel.is_connected():
                     quote = angel.get_quote(symbol, exchange)
                     
                     if quote and quote.get('price') is not None:
@@ -254,11 +250,8 @@ class MarketDataService:
         if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
             try:
                 angel = get_angel_service()
-                
-                if not angel.auth_token:
-                    angel.login()
-                
-                if angel.auth_token:
+
+                if angel.is_connected():
                     quote = angel.get_index_quote(index_name)
                     
                     if quote and quote.get('value') is not None:
@@ -1066,7 +1059,7 @@ async def get_indices():
     if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
         try:
             angel = get_angel_service()
-            if angel.auth_token:
+            if angel.is_connected():
                 results = angel.get_all_indices()
                 if results:
                     for r in results:
@@ -1109,7 +1102,7 @@ async def get_stocks(symbols: str = None):
     if MarketDataService._use_live_data and ANGEL_ONE_AVAILABLE:
         try:
             angel = get_angel_service()
-            if angel.auth_token:
+            if angel.is_connected():
                 # Get NSE and BSE separately
                 nse_results = angel.get_multiple_stocks_batch(symbol_list, "NSE")
                 bse_results = angel.get_multiple_stocks_batch(symbol_list, "BSE")
@@ -1993,17 +1986,9 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 @app.on_event("startup")
 async def startup_event():
-    """Auto-login to Angel One on startup"""
+    """Angel One uses per-user publisher-login (no global auto-login)."""
     if ANGEL_ONE_AVAILABLE:
-        try:
-            angel = get_angel_service()
-            success = angel.login()
-            if success:
-                logger.info("Angel One auto-login successful on startup")
-            else:
-                logger.warning("Angel One auto-login failed - will use simulated data until manual login")
-        except Exception as e:
-            logger.error(f"Angel One startup login error: {e}")
+        logger.info("Angel One ready in publisher-login mode (per-user sessions)")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
