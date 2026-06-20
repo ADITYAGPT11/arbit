@@ -1,96 +1,76 @@
-# ArbitPRO - Indian Markets Arbitrage & F&O Analytics Platform
+# ARBIT — Product Requirements Document
 
-## Problem Statement
-Build a production-grade Real-Time Multi-Exchange Arbitrage & F&O Analytics Platform for Indian Markets (NSE, BSE, MCX). Support NSE/BSE Cash, F&O, Index Derivatives. Arbitrage Engine (Cross-Exchange, Cash & Carry, Synthetic, Calendar Spreads, Statistical). Advanced Performance Analytics Dashboard. Ultra low-latency tick-by-tick processing. User requested: Angel One free API for real-time data, Telegram alerts, Google OAuth, and high performance.
+## Original Problem Statement
+Build a "Connect Broker" module starting with Angel One, mimicking professional platforms like Teji Mandi. Users must be redirected to the broker's official login page to enter credentials — NO storage of MPIN / TOTP / password / API secrets in the database or .env. The architecture must be extensible to support more brokers in the future.
 
-## Architecture
-- **Frontend**: React.js + TailwindCSS + Shadcn UI + Recharts
-- **Backend**: FastAPI + Python (async) + GZip middleware
-- **Database**: MongoDB (configured, minimal usage — live API data primary)
-- **Broker API**: Angel One SmartAPI (live market data, batch API)
-- **Auth**: Emergent-managed Google OAuth
+## Core Requirements
+- Use broker's OAuth/Publisher-Login redirect flow (Angel One = Publisher Login).
+- Do NOT store user-specific broker credentials in MongoDB or .env. Only platform-level API key lives in .env.
+- Maintain in-memory session (BrokerSessionManager) for user tokens — lost on backend restart by design.
+- Dedicated "/connect-broker" UI page.
+- Extensible registry: drop in a new BrokerProvider subclass → UI auto-discovers it.
 
-## Key Files
-- `/app/backend/server.py` — Main API (1600+ lines, routes + services)
-- `/app/backend/angel_one_service.py` — Angel One session management, batch data
-- `/app/backend/option_chain_service.py` — Instrument master, T-shaped chain builder
-- `/app/frontend/src/components/Layout.jsx` — Responsive sidebar + mobile hamburger
-- `/app/frontend/src/components/BrokerStatus.jsx` — Broker connection status
-- `/app/frontend/src/pages/Dashboard.jsx` — Live market dashboard
-- `/app/frontend/src/pages/OptionChain.jsx` — T-shaped option chain (auto-refresh 5s)
+## What's Built (as of Feb 2026)
 
-## What's Implemented
+### Backend (`/app/backend/`)
+- `brokers/base.py` — abstract `BrokerProvider`, `BrokerSession`, `BrokerProfile` dataclasses.
+- `brokers/angel_one.py` — Angel One publisher-login implementation (`build_login_url`, `handle_callback` using SmartConnect SDK).
+- `brokers/registry.py` — `BROKER_REGISTRY` dict: angel_one (active) + zerodha / upstox / fyers / icici_direct (coming-soon placeholders).
+- `brokers/session_manager.py` — thread-safe in-memory store: `set/get/delete/list_for_user/any_active_for_broker` + CSRF state tokens (`create_state/consume_state`, 10 min TTL).
+- `server.py` routes:
+  - `GET  /api/brokers/list` — public, returns 5 brokers with platform_configured + per-user is_connected.
+  - `POST /api/brokers/{broker_id}/connect` — auth required, returns publisher-login URL + state token.
+  - `GET  /api/brokers/{broker_id}/callback` — public redirect target from broker; consumes state, stores session, redirects to `/connect-broker?status=...`.
+  - `GET  /api/brokers/sessions` — auth required, lists user's active sessions.
+  - `POST /api/brokers/{broker_id}/disconnect` — auth required, clears in-memory session.
+- `angel_one_service.py` — refactored to pull tokens from `session_manager.any_active_for_broker("angel_one")` instead of personal `.env` creds. Legacy `login()` is now a silent no-op.
 
-### Core Features (DONE)
-- Angel One SmartAPI integration with auto-login, session management
-- Live market indices (NIFTY, BANKNIFTY, FINNIFTY, SENSEX, BANKEX)
-- Live F&O stock prices (NSE + BSE) via batch API
-- Cross-exchange arbitrage scanner (NSE vs BSE)
-- Cash & Carry, Synthetic, Calendar Spread, Statistical arbitrage calculators
-- Performance analytics, risk management, backtesting modules
-- Broker connection status with market session awareness (IST)
-- Google OAuth via Emergent Auth
+### Frontend (`/app/frontend/src/`)
+- `pages/ConnectBroker.jsx` — Connect Broker UI: lists 5 brokers, Connect/Disconnect buttons, OAuth callback toast handling, "platform not configured" warnings, login prompt for unauthenticated users.
+- `App.js` — `/connect-broker` route wired.
+- `components/Layout.jsx` — "Connect Broker" sidebar nav item (Plug icon).
+- `components/BrokerStatus.jsx` — legacy sidebar widget now redirects to `/connect-broker` instead of calling deprecated `/api/market/angel-one/login`.
 
-### T-Shaped Option Chain (DONE — June 2026)
-- Real-time option chain with 5-second auto-refresh
-- Instrument master download + indexed lookups (187K instruments)
-- NIFTY, BANKNIFTY, FINNIFTY + 150+ stock options
-- OI, Change in OI, Volume, IV, LTP, Change for CE and PE
-- ATM strike highlighting, PCR calculation
-- Summary bar: Total Call/Put OI, PCR, Volume
+### Configuration
+- `backend/.env`:
+  - `ARBIT_ANGEL_API_KEY=rbFr048b` (user-provided, Feb 2026)
+  - `ARBIT_ANGEL_API_SECRET=` (optional; not needed for publisher-login)
+  - `ARBIT_ANGEL_REDIRECT_URL=https://broker-integrator.preview.emergentagent.com/api/brokers/angel_one/callback`
 
-### Production & HFT Optimizations (DONE — June 2026)
-- GZip response compression (77% reduction)
-- asyncio.to_thread for blocking Angel One API calls
-- In-memory response cache (2s TTL) for option chain polling
-- Indexed instrument master (O(1) lookups vs O(n) scans)
-- Batch API calls to Angel One (50 tokens per request)
+## Testing Status
+- iter7: brokers pytest suite 18/18 pass. Found 2 regressions in server.py callers → fixed.
+- iter8: regressions verified fixed. Brokers feature is production-ready *up to actual end-to-end Angel One login* (which requires a real user MPIN/OTP test).
 
-### Mobile Responsive UI (DONE — June 2026)
-- Hamburger menu sidebar toggle below 1024px
-- Slide-in sidebar with overlay + close button
-- Mobile header with logo + page name
-- Responsive grids (2-col mobile, 5-col desktop for indices)
-- Horizontal scroll for option chain table on mobile
-- Adaptive summary cards (3 mobile, 5 desktop)
-- Touch-friendly select controls
+## Pending / Blocked
 
-### IV Analytics — Options Seller's Toolkit (DONE — June 2026)
-- Black-Scholes IV calculator (Newton-Raphson + Brent fallback, verified)
-- ATM Implied Volatility computed from live option prices
-- India VIX live feed (token 99926017 from Angel One)
-- IV Rank: (Current IV - 52w Low) / (52w High - 52w Low) × 100
-- IV Percentile: % of days where IV was below current
-- Historical Volatility (HV): 20-day log returns, annualized √252
-- IV Skew chart: CE IV (green) vs PE IV (red) across strikes
-- Max Pain calculator: strike where total option buyer losses are maximized
-- Seller Signal engine: SELL_PREMIUM / AVOID_SELLING / NEUTRAL with reasoning
-- Daily IV & price snapshots stored in MongoDB (builds over time)
-- Options Seller's Guide with educational reference cards
+### P0 — End-to-end OAuth verification (requires user action)
+Once you (or any user) clicks Connect on Angel One:
+1. You should be redirected to `https://smartapi.angelbroking.com/publisher-login?api_key=rbFr048b&state=...`
+2. You log in with Client ID + MPIN + OTP on Angel One's site
+3. Angel One redirects to `https://broker-integrator.preview.emergentagent.com/api/brokers/angel_one/callback?auth_token=...&feed_token=...&state=...`
+4. Backend stores the session in memory; you land back at `/connect-broker?status=success`.
+**Cannot self-test** — needs real Angel One credentials and a logged-in ARBIT user. *Awaiting user smoke-test.*
 
-### UX Improvements (DONE — June 2026)
-- Option chain banner: large bold symbol + blue expiry badge + spot price
-- Labeled dropdowns (UNDERLYING, EXPIRY, STRIKES) for clarity
-- CE = Green, PE = Red throughout (headers, LTP, ITM tints, summary bar)
-- Dashboard arbitrage: full-width side-by-side NSE vs BSE cards
-- BUY/SELL labels with green/red border tinting per exchange
-- Cost breakdown: Gross Spread, Transaction Cost, Slippage (0.02%), Net Profit/Share
-- Net profit color-coded green (profitable) / red (unprofitable)
+### P1 — Optional polish
+- Expose `auth_mode: "publisher_login"` field on `/api/market/broker-status` so the UI can render publisher-login-specific copy (low impact).
+- Hide / deprecate the legacy `/api/market/angel-one/login` and `/api/market/angel-one/reset` endpoints — they're soft-broken (return 401) and could confuse callers.
 
-## Pending / Backlog
+### P2 — Future brokers
+- Implement `ZerodhaProvider` (Kite Connect OAuth 2.0).
+- Implement `UpstoxProvider` (OAuth 2.0).
+- Implement `FyersProvider` (OAuth 2.0).
+- Implement `IciciDirectProvider` (Breeze Connect).
+For each: subclass `BrokerProvider`, implement `build_login_url` + `handle_callback`, swap from `_ComingSoonBroker` to active in `BROKER_REGISTRY`.
 
-### P0
-- Telegram integration for arbitrage alerts
+### P3 — Refactoring
+- `server.py` is 2003 lines. Split into `/app/backend/routers/{brokers,market,arbitrage,auth}.py`.
+- `broker_callback` hard-codes same-origin `/connect-broker` redirect — fragile if frontend host diverges in production. Use a `FRONTEND_URL` env var.
 
-### P1
-- WebSocket architecture for real-time data (replace REST polling)
-- Deep-dive pages with live data for Cash & Carry, Synthetic, Calendar, Statistical
-- Fix missing OHLC data (Change/Volume columns show "—" for batch LTP)
+## Architecture Notes
+- **No DB storage of broker tokens.** This is a hard requirement; do not change.
+- **State tokens** (CSRF) are one-time-use, 10-min TTL.
+- **Sessions** expire after 12 hours (Angel One tokens are valid until ~5:30 AM IST next day; we cap conservatively).
+- **`any_active_for_broker()`** lets shared market-data routes (indices, stocks) use *any* logged-in user's session to fetch quotes. This is intentional — quotes are public data, the user who logged in just provides the auth token to call the SDK.
 
-### P2
-- PostgreSQL migration
-- Backtesting with historical data
-- Advanced Analytics Dashboard (Strategy PnL, Weekday performance)
-
-### Refactoring
-- Split server.py monolith into routes/, services/, models/ modules
+## Tech Stack
+React + FastAPI + MongoDB. SmartAPI Python SDK for Angel One. Emergent-managed Google OAuth for app-level user authentication.
