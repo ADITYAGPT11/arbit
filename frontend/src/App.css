@@ -1,20 +1,21 @@
 /* Trading Terminal Dark Theme */
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+@import './styles/tokens.css';
+@import './styles/responsive.css';
 
 :root {
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #111111;
-  --bg-tertiary: #1a1a1a;
-  --bg-card: #141414;
-  --border-color: #262626;
-  --text-primary: #ffffff;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
-  --accent-green: #22c55e;
-  --accent-red: #ef4444;
-  --accent-blue: #3b82f6;
-  --accent-yellow: #eab308;
-  --accent-purple: #a855f7;
+  /* Legacy aliases — map historical class names to canonical design tokens.
+     New code should reference tokens directly (e.g., var(--surface-1)). */
+  --bg-primary: var(--surface-base);
+  --bg-secondary: var(--surface-1);
+  --bg-tertiary: var(--surface-3);
+  --bg-card: var(--surface-2);
+  --border-color: var(--border-subtle);
+  --accent-green: var(--color-success);
+  --accent-red: var(--color-danger);
+  --accent-blue: var(--brand-primary);
+  --accent-yellow: var(--color-warning);
+  --accent-purple: var(--brand-secondary);
 }
 
 * {
@@ -997,12 +998,14 @@ body {
   background: var(--bg-tertiary);
 }
 
-.oc-row-atm {
-  background: rgba(234, 179, 8, 0.08) !important;
+.option-chain-table .oc-row-atm,
+tr.oc-row-atm {
+  background: var(--color-warning-soft);
 }
 
-.oc-row-atm:hover {
-  background: rgba(234, 179, 8, 0.12) !important;
+.option-chain-table .oc-row-atm:hover,
+tr.oc-row-atm:hover {
+  background: rgba(234, 179, 8, 0.16);
 }
 
 .oc-td-ce {

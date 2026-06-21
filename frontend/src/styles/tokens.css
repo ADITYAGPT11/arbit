@@ -1,0 +1,132 @@
+/* =============================================================================
+   ARBIT — Design Tokens (single source of truth)
+   Industry-standard token taxonomy: color, spacing, typography, motion, layers.
+   These are consumed by App.css, Tailwind (via tailwind.config.js), and components.
+   ============================================================================= */
+
+:root {
+  /* ---------- Color: brand & accents ---------- */
+  --brand-primary: #3b82f6;
+  --brand-primary-hover: #2563eb;
+  --brand-secondary: #a855f7;
+
+  /* Semantic colors */
+  --color-success: #22c55e;
+  --color-success-soft: rgba(34, 197, 94, 0.12);
+  --color-danger: #ef4444;
+  --color-danger-soft: rgba(239, 68, 68, 0.12);
+  --color-warning: #eab308;
+  --color-warning-soft: rgba(234, 179, 8, 0.10);
+  --color-info: #3b82f6;
+  --color-info-soft: rgba(59, 130, 246, 0.12);
+
+  /* Neutral scale (dark theme primary) */
+  --color-neutral-50: #fafafa;
+  --color-neutral-100: #f4f4f5;
+  --color-neutral-200: #e4e4e7;
+  --color-neutral-300: #d4d4d8;
+  --color-neutral-400: #a1a1aa;
+  --color-neutral-500: #71717a;
+  --color-neutral-600: #52525b;
+  --color-neutral-700: #3f3f46;
+  --color-neutral-800: #27272a;
+  --color-neutral-900: #18181b;
+  --color-neutral-950: #09090b;
+
+  /* Surface layers */
+  --surface-base: #0a0a0a;
+  --surface-1: #111111;
+  --surface-2: #141414;
+  --surface-3: #1a1a1a;
+  --surface-hover: #1f1f23;
+  --border-subtle: #262626;
+  --border-strong: #3f3f46;
+
+  /* Text */
+  --text-primary: #ffffff;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-inverse: #09090b;
+
+  /* ---------- Spacing scale (4px base) ---------- */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---------- Radius scale ---------- */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* ---------- Typography ---------- */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 30px;
+  --font-size-4xl: 36px;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.2;
+  --line-height-base: 1.5;
+  --line-height-relaxed: 1.7;
+
+  /* ---------- Shadows ---------- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.5);
+  --shadow-glow-primary: 0 0 24px rgba(59, 130, 246, 0.25);
+  --shadow-drawer: 4px 0 24px rgba(0, 0, 0, 0.5);
+
+  /* ---------- Motion ---------- */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 300ms;
+  --easing-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ---------- Z-index scale ---------- */
+  --z-base: 1;
+  --z-dropdown: 20;
+  --z-sidebar: 40;
+  --z-overlay: 45;
+  --z-modal: 50;
+  --z-toast: 60;
+
+  /* ---------- Layout ---------- */
+  --sidebar-width: 240px;
+  --mobile-header-height: 56px;
+  --container-max: 1440px;
+}
+
+/* =============================================================================
+   Breakpoints (referenced from CSS via @media; mirrored in Tailwind defaults)
+   xs:  < 480px        — small phones
+   sm:  >= 640px       — large phones / small tablets portrait
+   md:  >= 768px       — tablets
+   lg:  >= 1024px      — laptops (sidebar appears)
+   xl:  >= 1280px      — desktops
+   2xl: >= 1536px      — large desktops
+   ============================================================================= */

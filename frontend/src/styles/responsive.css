@@ -1,0 +1,141 @@
+/* =============================================================================
+   ARBIT — Responsive enhancement layer
+   Loaded LAST so its rules take effect at the boundaries we care about.
+   Mobile-first additions only — does not override desktop layout.
+   ============================================================================= */
+
+/* ---------- Universal containers honour the design-token max-width ---------- */
+.page-container {
+  width: 100%;
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+@media (min-width: 768px) {
+  .page-container {
+    padding: var(--space-6) var(--space-6);
+  }
+}
+
+/* ---------- Cards: tighten on small viewports ---------- */
+@media (max-width: 640px) {
+  .card {
+    padding: var(--space-3);
+    border-radius: var(--radius-md);
+  }
+  .card-header {
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-2);
+  }
+  .card-title {
+    font-size: var(--font-size-sm);
+  }
+}
+
+/* ---------- Tables: horizontal scroll + sticky first column on mobile ---------- */
+@media (max-width: 768px) {
+  .data-table {
+    font-size: var(--font-size-sm);
+    min-width: 480px;
+  }
+  .data-table th,
+  .data-table td {
+    padding: var(--space-2) var(--space-3);
+    white-space: nowrap;
+  }
+  .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ---------- Stats grid: collapse to 2 columns then 1 ---------- */
+@media (max-width: 640px) {
+  .stat-card {
+    padding: var(--space-3);
+  }
+  .stat-value {
+    font-size: var(--font-size-xl);
+  }
+  .stat-label {
+    font-size: var(--font-size-xs);
+  }
+}
+
+/* ---------- Main content: respect mobile-header offset ---------- */
+@media (max-width: 1024px) {
+  .main-content {
+    margin-left: 0;
+    padding-top: var(--mobile-header-height);
+  }
+}
+
+@media (min-width: 1025px) {
+  .main-content {
+    margin-left: var(--sidebar-width);
+    padding-top: 0;
+  }
+}
+
+/* ---------- Buttons: full-width on small phones ---------- */
+@media (max-width: 480px) {
+  .btn-block-mobile {
+    width: 100%;
+  }
+  .btn,
+  button.btn-primary,
+  button.btn-secondary {
+    padding-inline: var(--space-3);
+    font-size: var(--font-size-sm);
+  }
+}
+
+/* ---------- Form inputs: bigger tap targets on touch devices ---------- */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  select,
+  button,
+  .nav-item {
+    min-height: 44px;
+  }
+}
+
+/* ---------- Charts: keep aspect-ratio readable on tiny screens ---------- */
+@media (max-width: 640px) {
+  .chart-container,
+  .recharts-responsive-container {
+    min-height: 200px;
+  }
+}
+
+/* ---------- Reduce font sizes by one step on phones ---------- */
+@media (max-width: 480px) {
+  h1, .h1 { font-size: var(--font-size-2xl); }
+  h2, .h2 { font-size: var(--font-size-xl); }
+  h3, .h3 { font-size: var(--font-size-lg); }
+}
+
+/* ---------- Honour user's reduced-motion preference ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
+  }
+}
+
+/* ---------- Print: hide sidebar & nav ---------- */
+@media print {
+  .sidebar,
+  .mobile-header,
+  .sidebar-overlay {
+    display: none;
+  }
+  .main-content {
+    margin-left: 0;
+    padding-top: 0;
+  }
+}
