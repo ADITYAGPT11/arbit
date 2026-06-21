@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
-import { useAuth } from "../App";
+import { Outlet, NavLink, useLocation } from "react-router-dom";
 import BrokerStatus from "./BrokerStatus";
 import {
   LayoutDashboard,
@@ -9,13 +8,10 @@ import {
   Shield,
   Bell,
   History,
-  LogOut,
-  LogIn,
   Calculator,
   GitCompare,
   Calendar,
   LineChart,
-  User,
   Grid3x3,
   Menu,
   X,
@@ -24,41 +20,27 @@ import {
 } from "lucide-react";
 
 const navItems = [
-  { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, public: true },
-  { path: "/option-chain", label: "Option Chain", icon: Grid3x3, public: true },
-  { path: "/iv-analytics", label: "IV Analytics", icon: Gauge, public: true },
-  { path: "/arbitrage", label: "Cross-Exchange Arb", icon: ArrowLeftRight, public: true },
-  { path: "/cash-carry", label: "Cash & Carry", icon: Calculator, public: true },
-  { path: "/synthetic", label: "Synthetic Futures", icon: GitCompare, public: true },
-  { path: "/calendar-spread", label: "Calendar Spread", icon: Calendar, public: true },
-  { path: "/statistical", label: "Statistical Arb", icon: LineChart, public: true },
-  { path: "/performance", label: "Performance", icon: TrendingUp, public: true },
-  { path: "/risk", label: "Risk Management", icon: Shield, public: true },
-  { path: "/alerts", label: "Alerts", icon: Bell, public: false },
-  { path: "/backtest", label: "Backtesting", icon: History, public: true },
-  { path: "/connect-broker", label: "Connect Broker", icon: Plug, public: true },
+  { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/option-chain", label: "Option Chain", icon: Grid3x3 },
+  { path: "/iv-analytics", label: "IV Analytics", icon: Gauge },
+  { path: "/arbitrage", label: "Cross-Exchange Arb", icon: ArrowLeftRight },
+  { path: "/cash-carry", label: "Cash & Carry", icon: Calculator },
+  { path: "/synthetic", label: "Synthetic Futures", icon: GitCompare },
+  { path: "/calendar-spread", label: "Calendar Spread", icon: Calendar },
+  { path: "/statistical", label: "Statistical Arb", icon: LineChart },
+  { path: "/performance", label: "Performance", icon: TrendingUp },
+  { path: "/risk", label: "Risk Management", icon: Shield },
+  { path: "/alerts", label: "Alerts", icon: Bell },
+  { path: "/backtest", label: "Backtesting", icon: History },
+  { path: "/connect-broker", label: "Connect Broker", icon: Plug },
 ];
 
 export default function Layout() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const handleLogout = async () => {
-    await logout();
-    navigate("/dashboard");
-    setSidebarOpen(false);
-  };
-
-  const handleLogin = () => {
-    const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
-
   const closeSidebar = () => setSidebarOpen(false);
 
-  // Current page label for mobile header
   const currentPage = navItems.find((i) => location.pathname.startsWith(i.path))?.label || "Dashboard";
 
   return (
@@ -116,17 +98,12 @@ export default function Layout() {
               to={item.path}
               onClick={closeSidebar}
               className={({ isActive }) =>
-                `nav-item ${isActive ? "active" : ""} ${!item.public && !user ? "opacity-60" : ""}`
+                `nav-item ${isActive ? "active" : ""}`
               }
               data-testid={`nav-${item.path.slice(1)}`}
             >
               <item.icon className="nav-icon" />
               <span>{item.label}</span>
-              {!item.public && !user && (
-                <span className="ml-auto text-xs text-zinc-500">
-                  <Bell className="w-3 h-3" />
-                </span>
-              )}
             </NavLink>
           ))}
         </nav>
@@ -134,45 +111,9 @@ export default function Layout() {
         <BrokerStatus />
 
         <div className="sidebar-footer">
-          {user ? (
-            <>
-              <div className="flex items-center gap-3 mb-3">
-                {user.picture ? (
-                  <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full" />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center">
-                    <User className="w-4 h-4" />
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{user.name}</div>
-                  <div className="text-xs text-zinc-500 truncate">{user.email}</div>
-                </div>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="btn btn-secondary w-full flex items-center justify-center gap-2"
-                data-testid="logout-btn"
-              >
-                <LogOut className="w-4 h-4" />
-                Logout
-              </button>
-            </>
-          ) : (
-            <div>
-              <p className="text-xs text-zinc-500 mb-3 text-center">
-                Login to save alerts & watchlists
-              </p>
-              <button
-                onClick={handleLogin}
-                className="btn btn-primary w-full flex items-center justify-center gap-2"
-                data-testid="login-btn"
-              >
-                <LogIn className="w-4 h-4" />
-                Login with Google
-              </button>
-            </div>
-          )}
+          <div className="text-xs text-zinc-600 text-center">
+            ArbitPRO v1.0
+          </div>
         </div>
       </aside>
 

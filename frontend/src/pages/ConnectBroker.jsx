@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { toast } from "sonner";
-import { useAuth, API } from "../App";
+import { API } from "../App";
 import {
   CheckCircle2,
   XCircle,
@@ -14,7 +14,6 @@ import {
   Clock,
   Sparkles,
   AlertTriangle,
-  LogIn,
 } from "lucide-react";
 
 const BROKER_TAGLINE = {
@@ -43,7 +42,6 @@ function formatRemaining(expiresAt) {
 }
 
 export default function ConnectBroker() {
-  const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -53,7 +51,7 @@ export default function ConnectBroker() {
 
   const fetchBrokers = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/brokers/list`, { withCredentials: true });
+      const res = await axios.get(`${API}/brokers/list`);
       setBrokers(res.data.brokers || []);
     } catch (err) {
       toast.error("Failed to load brokers");
@@ -78,16 +76,11 @@ export default function ConnectBroker() {
     } else {
       toast.error(message || "Broker connection failed");
     }
-    // Clean URL & refresh status
     navigate("/connect-broker", { replace: true });
     fetchBrokers();
   }, [location.search, navigate, fetchBrokers]);
 
   const handleConnect = async (broker) => {
-    if (!user) {
-      toast.info("Please login first to connect a broker");
-      return;
-    }
     if (broker.coming_soon) {
       toast.info(`${broker.display_name} integration is coming soon`);
       return;
@@ -100,14 +93,9 @@ export default function ConnectBroker() {
     }
     try {
       setConnectingId(broker.broker_id);
-      const res = await axios.post(
-        `${API}/brokers/${broker.broker_id}/connect`,
-        {},
-        { withCredentials: true }
-      );
+      const res = await axios.post(`${API}/brokers/${broker.broker_id}/connect`);
       const { login_url } = res.data;
       if (!login_url) throw new Error("No login URL returned");
-      // Redirect in same tab — broker will redirect back to /connect-broker via our /api callback.
       window.location.href = login_url;
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || "Connect failed";
@@ -119,11 +107,7 @@ export default function ConnectBroker() {
   const handleDisconnect = async (broker) => {
     if (!window.confirm(`Disconnect ${broker.display_name}?`)) return;
     try {
-      await axios.post(
-        `${API}/brokers/${broker.broker_id}/disconnect`,
-        {},
-        { withCredentials: true }
-      );
+      await axios.post(`${API}/brokers/${broker.broker_id}/disconnect`);
       toast.success(`Disconnected from ${broker.display_name}`);
       fetchBrokers();
     } catch (err) {
@@ -143,33 +127,10 @@ export default function ConnectBroker() {
           <h1 className="text-2xl md:text-3xl font-bold text-white">Connect Broker</h1>
         </div>
         <p className="text-zinc-400 text-sm max-w-2xl">
-          Connect your trading account to enable live market data and order placement.
-          We <span className="text-emerald-400 font-medium">never store</span> your MPIN,
-          TOTP, or password — you log in directly on your broker's site.
+          Connect your trading account to enable live market data. We <span className="text-emerald-400 font-medium">never store</span> your
+          MPIN, TOTP, or password — you log in directly on your broker's site.
         </p>
       </div>
-
-      {/* Login prompt */}
-      {!user && (
-        <div className="mb-6 p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex items-center gap-3" data-testid="login-prompt">
-          <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
-          <div className="flex-1">
-            <div className="text-amber-200 font-medium text-sm">Login required</div>
-            <div className="text-zinc-400 text-xs">
-              Sign in with Google to connect your broker account.
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              const redirectUrl = window.location.origin + "/connect-broker";
-              window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-            }}
-            className="btn btn-primary text-xs flex items-center gap-2"
-          >
-            <LogIn className="w-3 h-3" /> Login
-          </button>
-        </div>
-      )}
 
       {/* Security note */}
       <div className="mb-8 p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5">
@@ -292,9 +253,9 @@ export default function ConnectBroker() {
                   ) : (
                     <button
                       onClick={() => handleConnect(b)}
-                      disabled={b.coming_soon || isConnecting || !user}
+                      disabled={b.coming_soon || isConnecting}
                       className={`btn text-xs flex-1 flex items-center justify-center gap-1.5 ${
-                        b.coming_soon || !user ? "btn-secondary opacity-60 cursor-not-allowed" : "btn-primary"
+                        b.coming_soon ? "btn-secondary opacity-60 cursor-not-allowed" : "btn-primary"
                       }`}
                       data-testid={`connect-${b.broker_id}`}
                     >

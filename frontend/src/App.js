@@ -1,7 +1,5 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
-import axios from "axios";
-import { Toaster, toast } from "sonner";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
 import "./App.css";
 
 // Pages
@@ -18,145 +16,15 @@ import Backtesting from "./pages/Backtesting";
 import OptionChain from "./pages/OptionChain";
 import IVAnalytics from "./pages/IVAnalytics";
 import ConnectBroker from "./pages/ConnectBroker";
-import Login from "./pages/Login";
 import Layout from "./components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
-// Auth Context
-import { createContext, useContext } from "react";
-
-const AuthContext = createContext(null);
-
-export const useAuth = () => useContext(AuthContext);
-
-// Auth Provider
-const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  const checkAuth = useCallback(async () => {
-    // CRITICAL: If returning from OAuth callback, skip the /me check.
-    if (window.location.hash?.includes("session_id=")) {
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const response = await axios.get(`${API}/auth/me`, {
-        withCredentials: true,
-      });
-      setUser(response.data);
-    } catch (error) {
-      // User not logged in - that's fine for public pages
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    checkAuth();
-  }, [checkAuth]);
-
-  const login = (userData) => {
-    setUser(userData);
-  };
-
-  const logout = async () => {
-    try {
-      await axios.post(`${API}/auth/logout`, {}, { withCredentials: true });
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
-    setUser(null);
-  };
-
-  return (
-    <AuthContext.Provider value={{ user, loading, login, logout, checkAuth }}>
-      {children}
-    </AuthContext.Provider>
-  );
-};
-
-// Auth Callback Component
-const AuthCallback = () => {
-  const navigate = useNavigate();
-  const { login } = useAuth();
-  const hasProcessed = useRef(false);
-
-  useEffect(() => {
-    if (hasProcessed.current) return;
-    hasProcessed.current = true;
-
-    const processAuth = async () => {
-      const hash = window.location.hash;
-      const sessionId = hash.split("session_id=")[1]?.split("&")[0];
-
-      if (sessionId) {
-        try {
-          const response = await axios.post(
-            `${API}/auth/session`,
-            { session_id: sessionId },
-            { withCredentials: true }
-          );
-          login(response.data);
-          toast.success("Login successful!");
-          navigate("/dashboard", { replace: true, state: { user: response.data } });
-        } catch (error) {
-          console.error("Auth error:", error);
-          toast.error("Authentication failed");
-          navigate("/dashboard", { replace: true });
-        }
-      } else {
-        navigate("/dashboard", { replace: true });
-      }
-    };
-
-    processAuth();
-  }, [navigate, login]);
-
-  return (
-    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-      <div className="text-white text-xl">Authenticating...</div>
-    </div>
-  );
-};
-
-// Protected Route - Only for user-specific features (alerts, watchlist)
-const ProtectedRoute = ({ children }) => {
-  const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-        <div className="text-white text-xl">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    toast.info("Please login to access this feature");
-    return <Navigate to="/dashboard" replace />;
-  }
-
-  return children;
-};
-
-// App Router - Most features are public, only alerts/watchlist need auth
+// App Router — all pages public, no auth required
 function AppRouter() {
-  const location = useLocation();
-
-  // Check URL fragment for session_id synchronously during render
-  if (location.hash?.includes("session_id=")) {
-    return <AuthCallback />;
-  }
-
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
-      {/* All analysis features are public */}
       <Route path="/" element={<Layout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
@@ -169,10 +37,9 @@ function AppRouter() {
         <Route path="statistical" element={<StatisticalArbitrage />} />
         <Route path="performance" element={<PerformanceAnalytics />} />
         <Route path="risk" element={<RiskManagement />} />
+        <Route path="alerts" element={<AlertsConfig />} />
         <Route path="backtest" element={<Backtesting />} />
         <Route path="connect-broker" element={<ConnectBroker />} />
-        {/* Only alerts require login (user-specific) */}
-        <Route path="alerts" element={<ProtectedRoute><AlertsConfig /></ProtectedRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
@@ -182,10 +49,8 @@ function AppRouter() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <Toaster position="top-right" richColors />
-        <AppRouter />
-      </AuthProvider>
+      <Toaster position="top-right" richColors />
+      <AppRouter />
     </BrowserRouter>
   );
 }

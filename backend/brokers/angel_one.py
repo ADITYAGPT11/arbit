@@ -38,7 +38,7 @@ class AngelOneProvider(BrokerProvider):
     website = "https://www.angelone.in"
     # Multi-user publisher-login flow isn't production-ready for retail SmartAPI accounts yet.
     # Personal auto-login (system_session.py) still works independently when ANGEL_* env vars are set.
-    coming_soon = True
+    coming_soon = False
 
     LOGIN_BASE_URL = "https://smartapi.angelone.in/publisher-login"
 
