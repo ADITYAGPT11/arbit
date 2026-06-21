@@ -347,48 +347,11 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Stock Prices */}
-        <div className="card" data-testid="stock-prices-table">
-          <div className="card-header">
-            <span className="card-title">F&O Stocks - NSE vs BSE</span>
-            <Activity className="w-4 h-4 text-zinc-500" />
-          </div>
-          <div className="overflow-x-auto">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Exchange</th>
-                  <th>Price</th>
-                  <th>Change</th>
-                  <th>Volume</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stocks.slice(0, 15).map((stock, idx) => (
-                  <tr key={`${stock.symbol}-${stock.exchange}-${idx}`}>
-                    <td className="font-medium">{stock.symbol}</td>
-                    <td>
-                      <span className={`badge ${stock.exchange === "NSE" ? "badge-blue" : "badge-yellow"}`}>
-                        {stock.exchange}
-                      </span>
-                    </td>
-                    <td>{formatPrice(stock.price)}</td>
-                    <td className={stock.change_pct >= 0 ? "price-up" : "price-down"}>
-                      {formatChange(stock.change_pct)}
-                    </td>
-                    <td>{stock.volume?.toLocaleString("en-IN") || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
       </div>
 
       {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-        {indices.slice(0, 2).map((index) => (
+        {indices.filter((i) => i.index !== "BANKEX" && i.index !== "SENSEX").slice(0, 2).map((index) => (
           <div key={index.index} className="card" data-testid={`chart-${index.index}`}>
             <div className="card-header">
               <span className="card-title">{index.index} - Intraday</span>
