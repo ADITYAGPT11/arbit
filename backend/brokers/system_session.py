@@ -35,13 +35,24 @@ logger = logging.getLogger(__name__)
 SYSTEM_USER_ID = "_system"
 BROKER_ID = "angel_one"
 
-# Refresh slightly before Angel One's daily expiry (tokens die at ~5:30 AM IST → ~midnight UTC)
-REFRESH_INTERVAL = timedelta(hours=6)
+# Angel One jwtToken expires daily at 05:30 IST. We refresh slightly before that.
+# IST = UTC+5:30, so 05:30 IST == 00:00 UTC.
+# Refresh every 4 hours during the day (cheap with refreshToken; full TOTP only on failure).
+REFRESH_INTERVAL = timedelta(hours=4)
 
 # Cache of the authenticated SmartConnect client (the SDK keeps internal state after generateSession;
 # rebuilding from just access_token doesn't fully restore it — Angel One returns "Invalid Token").
 _smart_client: Optional[SmartConnect] = None
 _smart_client_lock = threading.Lock()
+
+
+def _next_token_expiry_utc() -> datetime:
+    """Return the next 05:30 IST (== 00:00 UTC) as a UTC datetime."""
+    now = datetime.now(timezone.utc)
+    expiry = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if expiry <= now:
+        expiry = expiry + timedelta(days=1)
+    return expiry
 
 
 def get_client() -> Optional[SmartConnect]:
@@ -117,8 +128,8 @@ def login_now() -> Optional[BrokerSession]:
             auth_token=auth_token,
             refresh_token=refresh_token,
             feed_token=feed_token,
-            # Angel One tokens technically expire next 5:30 AM IST; we conservatively cap at 8h
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=8),
+            # Angel One jwtToken expires daily at 05:30 IST (== 00:00 UTC).
+            expires_at=_next_token_expiry_utc(),
             profile=profile_obj,
         )
         session_manager.set(session)
@@ -135,6 +146,62 @@ def login_now() -> Optional[BrokerSession]:
         return None
 
 
+# ---------------- refresh-token based refresh (no TOTP needed) ----------------
+
+def refresh_session() -> Optional[BrokerSession]:
+    """
+    Mint a new jwtToken using the existing refreshToken — no MPIN/TOTP required.
+    Returns the refreshed BrokerSession on success, None on failure (caller should fall back to login_now).
+    """
+    existing = session_manager.get(SYSTEM_USER_ID, BROKER_ID)
+    if not existing or not existing.refresh_token:
+        return None
+
+    client = get_client()
+    if client is None:
+        return None
+
+    try:
+        data = client.generateToken(existing.refresh_token)
+        if not data or not data.get("status"):
+            logger.warning("Refresh-token call failed: %s", data)
+            return None
+
+        d = data.get("data") or {}
+        new_jwt = d.get("jwtToken") or d.get("jwt")
+        new_refresh = d.get("refreshToken") or existing.refresh_token
+        new_feed = d.get("feedToken") or existing.feed_token
+
+        if not new_jwt:
+            logger.warning("Refresh response missing jwtToken: %s", data)
+            return None
+
+        # Update the SDK client's internal token so cached calls keep working.
+        try:
+            client.setAccessToken(new_jwt)
+            if new_feed and hasattr(client, "setFeedToken"):
+                client.setFeedToken(new_feed)
+        except Exception:
+            pass
+
+        refreshed = BrokerSession(
+            user_id=SYSTEM_USER_ID,
+            broker_id=BROKER_ID,
+            auth_token=new_jwt,
+            refresh_token=new_refresh,
+            feed_token=new_feed,
+            expires_at=_next_token_expiry_utc(),
+            connected_at=existing.connected_at,  # preserve original login time
+            profile=existing.profile,
+        )
+        session_manager.set(refreshed)
+        logger.info("System session refreshed via refresh-token (no TOTP). next expiry=%s", refreshed.expires_at)
+        return refreshed
+    except Exception as e:
+        logger.warning("refresh_session error: %s", e)
+        return None
+
+
 # ---------------- background refresher ----------------
 
 _stop_event = threading.Event()
@@ -142,13 +209,15 @@ _thread: Optional[threading.Thread] = None
 
 
 def _refresh_loop() -> None:
-    """Sleep for REFRESH_INTERVAL, then re-login. Repeat until stop event is set."""
+    """Sleep for REFRESH_INTERVAL, then refresh. Prefer refresh-token; fall back to full login."""
     while not _stop_event.wait(REFRESH_INTERVAL.total_seconds()):
-        # Only refresh if creds still configured
         if not is_enabled():
             continue
-        # Re-login proactively — don't wait for token to fail
-        login_now()
+        # Cheap path first
+        if refresh_session() is None:
+            # Refresh-token didn't work — re-do the full TOTP login
+            logger.info("Refresh-token failed, falling back to full TOTP login")
+            login_now()
 
 
 def start_background_refresher() -> None:
