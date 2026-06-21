@@ -99,6 +99,18 @@ class AngelOneService:
         return session_manager.any_active_for_broker("angel_one")
 
     def _make_smart_api(self, auth_token: str) -> Optional[SmartConnect]:
+        # Prefer the live system client (it has full SDK state after generateSession).
+        try:
+            from brokers.system_session import get_client as _get_system_client
+            client = _get_system_client()
+            if client is not None:
+                return client
+        except Exception:
+            pass
+
+        # Fallback for publisher-login users: rebuild from auth_token only.
+        # NOTE: Angel One may reject this with "Invalid Token" for some endpoints —
+        # publisher-login users get full functionality only via dedicated SDK flow.
         if not self.api_key:
             self.last_error = "ARBIT_ANGEL_API_KEY missing in backend/.env"
             return None

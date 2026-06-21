@@ -2007,9 +2007,30 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 @app.on_event("startup")
 async def startup_event():
-    """Angel One uses per-user publisher-login (no global auto-login)."""
+    """Angel One: kick off personal auto-login if configured, else stay in publisher-login-only mode."""
     if ANGEL_ONE_AVAILABLE:
         logger.info("Angel One ready in publisher-login mode (per-user sessions)")
+    if BROKERS_MODULE_AVAILABLE:
+        try:
+            from brokers import system_session as _ss
+            if _ss.is_enabled():
+                # Run the (synchronous) TOTP login in a thread to not block startup
+                import asyncio
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _ss.login_now)
+                _ss.start_background_refresher()
+        except Exception as e:
+            logger.warning("System auto-login bootstrap failed: %s", e)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if BROKERS_MODULE_AVAILABLE:
+        try:
+            from brokers import system_session as _ss
+            _ss.stop_background_refresher()
+        except Exception:
+            pass
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
