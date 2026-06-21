@@ -36,6 +36,9 @@ class AngelOneProvider(BrokerProvider):
     auth_type = "redirect"
     logo_url = "https://www.angelone.in/assets/images/logo.svg"
     website = "https://www.angelone.in"
+    # Multi-user publisher-login flow isn't production-ready for retail SmartAPI accounts yet.
+    # Personal auto-login (system_session.py) still works independently when ANGEL_* env vars are set.
+    coming_soon = True
 
     LOGIN_BASE_URL = "https://smartapi.angelone.in/publisher-login"
 
