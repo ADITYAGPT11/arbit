@@ -17,6 +17,7 @@ import {
   X,
   Gauge,
   Plug,
+  Activity,
 } from "lucide-react";
 
 const navItems = [
@@ -32,6 +33,7 @@ const navItems = [
   { path: "/risk", label: "Risk Management", icon: Shield },
   { path: "/alerts", label: "Alerts", icon: Bell },
   { path: "/backtest", label: "Backtesting", icon: History },
+  { path: "/correlation", label: "Correlation Analysis", icon: Activity },
   { path: "/connect-broker", label: "Connect Broker", icon: Plug },
 ];
 

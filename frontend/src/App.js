@@ -16,6 +16,7 @@ import Backtesting from "./pages/Backtesting";
 import OptionChain from "./pages/OptionChain";
 import IVAnalytics from "./pages/IVAnalytics";
 import ConnectBroker from "./pages/ConnectBroker";
+import CorrelationAnalysis from "./pages/CorrelationAnalysis";
 import Layout from "./components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -40,6 +41,7 @@ function AppRouter() {
         <Route path="alerts" element={<AlertsConfig />} />
         <Route path="backtest" element={<Backtesting />} />
         <Route path="connect-broker" element={<ConnectBroker />} />
+        <Route path="correlation" element={<CorrelationAnalysis />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

@@ -24,6 +24,7 @@ from routers import (
     analytics as analytics_router,
     risk as risk_router,
     backtest as backtest_router,
+    correlation as correlation_router,
 )
 
 from services.market_data_service import setup_market_data_service
@@ -116,6 +117,7 @@ api_router.include_router(iv_router.router)
 api_router.include_router(analytics_router.router)
 api_router.include_router(risk_router.router)
 api_router.include_router(backtest_router.router)
+api_router.include_router(correlation_router.router)
 
 app.include_router(api_router)
 
