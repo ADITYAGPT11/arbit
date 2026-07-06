@@ -259,8 +259,8 @@ export default function Backtesting() {
                 {/* Equity Curve */}
                 <div>
                   <h4 className="text-sm font-medium mb-3">Equity Curve</h4>
-                  <div className="h-48 bg-zinc-900 rounded-lg p-4">
-                    <ResponsiveContainer width="100%" height="100%">
+                  <div className="h-48 bg-zinc-900 rounded-lg p-4 min-w-0">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                       <AreaChart
                         data={result.equity_curve.map((v, i) => ({
                           day: i * 5,

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ZoomIn, ZoomOut } from "lucide-react";
+import { ZoomIn, ZoomOut, Info } from "lucide-react";
 
 const SECTOR_COLORS = {
   Financial_Services: "#3b82f6",
@@ -18,7 +18,6 @@ const SECTOR_COLORS = {
 };
 
 function getCorrColor(value) {
-  // Scale: -1 (blue) → 0 (dark) → +1 (red)
   if (value === null || value === undefined) return "#1a1a1a";
   const v = Math.max(-1, Math.min(1, value));
   if (v > 0) {
@@ -35,6 +34,15 @@ function formatCorr(v) {
   return `${sign}${(v * 100).toFixed(0)}`;
 }
 
+function getStrengthLabel(v) {
+  const abs = Math.abs(v);
+  if (abs >= 0.8) return "Very Strong";
+  if (abs >= 0.6) return "Strong";
+  if (abs >= 0.4) return "Moderate";
+  if (abs >= 0.2) return "Weak";
+  return "None / Very Weak";
+}
+
 export default function CorrelationHeatmap({
   symbols = [],
   stockSectors = {},
@@ -45,6 +53,7 @@ export default function CorrelationHeatmap({
 }) {
   const [hoveredCell, setHoveredCell] = useState(null);
   const [zoom, setZoom] = useState(1);
+  const [showGuide, setShowGuide] = useState(false);
 
   if (!symbols.length || !matrix.length) {
     return (
@@ -72,7 +81,6 @@ export default function CorrelationHeatmap({
 
   const matrixDim = symbols.length;
 
-  // Find hovered cell info
   const hoverInfo = hoveredCell
     ? {
         sym1: symbols[hoveredCell.row],
@@ -90,40 +98,65 @@ export default function CorrelationHeatmap({
   return (
     <div className="space-y-3">
       {/* Controls */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {/* Zoom controls */}
+          <div className="flex items-center gap-1 bg-zinc-800/50 rounded-lg px-1.5 py-1">
+            <button
+              onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200"
+              title="Zoom out"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <span className="text-[10px] text-zinc-500 w-10 text-center font-mono">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setZoom((z) => Math.min(2, z + 0.2))}
+              className="p-0.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200"
+              title="Zoom in"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Guide button */}
           <button
-            onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}
-            className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-            title="Zoom out"
+            onClick={() => setShowGuide(!showGuide)}
+            className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 bg-zinc-800/50 rounded-lg px-2 py-1"
           >
-            <ZoomOut className="w-4 h-4" />
-          </button>
-          <span className="text-xs text-zinc-500 w-12 text-center">
-            {Math.round(zoom * 100)}%
-          </span>
-          <button
-            onClick={() => setZoom((z) => Math.min(2, z + 0.2))}
-            className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-            title="Zoom in"
-          >
-            <ZoomIn className="w-4 h-4" />
+            <Info className="w-3 h-3" />
+            {showGuide ? "Hide guide" : "Guide"}
           </button>
         </div>
 
-        {hoverInfo && (
-          <div className="text-xs text-zinc-400 font-mono">
-            {hoverInfo.sym1} / {hoverInfo.sym2}:{" "}
-            <span className={hoverInfo.value >= 0 ? "text-green-400" : "text-red-400"}>
-              {formatCorr(hoverInfo.value)}
+        {/* Hover info */}
+        <div className="text-xs text-zinc-400 font-mono min-h-[18px]">
+          {hoverInfo && (
+            <span>
+              <span style={{ color: SECTOR_COLORS[stockSectors[hoverInfo.sym1]] || "#666" }}>
+                {hoverInfo.sym1}
+              </span>
+              {" / "}
+              <span style={{ color: SECTOR_COLORS[stockSectors[hoverInfo.sym2]] || "#666" }}>
+                {hoverInfo.sym2}
+              </span>
+              {": "}
+              <span className={hoverInfo.value >= 0 ? "text-green-400" : "text-red-400"}>
+                {formatCorr(hoverInfo.value)}
+              </span>
+              <span className="text-zinc-600 text-[10px] ml-1">
+                ({getStrengthLabel(hoverInfo.value)})
+              </span>
             </span>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Legend */}
-        <div className="flex items-center gap-2 text-[10px] text-zinc-500">
+        {/* Color legend */}
+        <div className="flex items-center gap-1.5 text-[9px] text-zinc-500">
           <span>-1</span>
-          <div className="flex h-2 w-24 rounded overflow-hidden">
+          <div className="flex h-2 w-20 sm:w-24 rounded overflow-hidden">
             <div className="flex-1" style={{ background: "#282845" }} />
             <div className="flex-1" style={{ background: "#1a1a2e" }} />
             <div className="flex-1" style={{ background: "#2a1a1a" }} />
@@ -134,6 +167,44 @@ export default function CorrelationHeatmap({
           <span>+1</span>
         </div>
       </div>
+
+      {/* Quick guide popup */}
+      {showGuide && (
+        <div className="bg-zinc-900 border border-zinc-700/50 rounded-lg p-3 text-xs text-zinc-400 space-y-2">
+          <p><strong className="text-zinc-300">What is correlation?</strong> A measure of how two stocks move relative to each other, from -1 to +1.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="flex items-start gap-2">
+              <div className="w-3 h-3 rounded mt-0.5 flex-shrink-0" style={{ background: "#8b2020" }} />
+              <div>
+                <span className="text-green-400 font-medium">+0.7 to +1.0</span>
+                <p className="text-zinc-500">Strong positive — stocks move in the same direction</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <div className="w-3 h-3 rounded mt-0.5 flex-shrink-0" style={{ background: "#282845" }} />
+              <div>
+                <span className="text-red-400 font-medium">-0.7 to -1.0</span>
+                <p className="text-zinc-500">Strong negative — stocks move in opposite directions</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <div className="w-3 h-3 rounded mt-0.5 flex-shrink-0" style={{ background: "#5a2020" }} />
+              <div>
+                <span className="text-yellow-400 font-medium">+0.3 to +0.7</span>
+                <p className="text-zinc-500">Moderate — some tendency to move together</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <div className="w-3 h-3 rounded mt-0.5 flex-shrink-0" style={{ background: "#1a1a2e" }} />
+              <div>
+                <span className="text-zinc-400 font-medium">-0.3 to +0.3</span>
+                <p className="text-zinc-500">Weak — little to no relationship</p>
+              </div>
+            </div>
+          </div>
+          <p className="text-zinc-600 pt-1 border-t border-zinc-800">Click any cell (except diagonal) to analyze that pair in detail.</p>
+        </div>
+      )}
 
       {/* Heatmap container */}
       <div
@@ -215,9 +286,8 @@ export default function CorrelationHeatmap({
                     selectedPair &&
                     ((selectedPair.sym1 === symbols[i] && selectedPair.sym2 === symbols[j]) ||
                       (selectedPair.sym1 === symbols[j] && selectedPair.sym2 === symbols[i]));
-                  const isHovered =
-                    hoveredCell &&
-                    (hoveredCell.row === i || hoveredCell.col === j);
+                  const isHoveredRow = hoveredCell?.row === i;
+                  const isHoveredCol = hoveredCell?.col === j;
                   const isDiagonal = i === j;
 
                   return (
@@ -234,7 +304,7 @@ export default function CorrelationHeatmap({
                         background: isDiagonal
                           ? "#1a1a1a"
                           : getCorrColor(val),
-                        opacity: isHovered && !isSelected ? 0.85 : 1,
+                        opacity: isHoveredRow || isHoveredCol ? 0.85 : 1,
                         position: "relative",
                         borderRadius: i === j ? "50%" : 1,
                       }}
@@ -243,9 +313,9 @@ export default function CorrelationHeatmap({
                         setHoveredCell({ row: i, col: j })
                       }
                       onMouseLeave={() => setHoveredCell(null)}
-                      title={`${symbols[i]} / ${symbols[j]}: ${formatCorr(val)}`}
+                      title={`${symbols[i]} / ${symbols[j]}: ${formatCorr(val)} (${getStrengthLabel(val)})`}
                     >
-                      {/* Show value on hover for better readability */}
+                      {/* Value tooltip on hover */}
                       {hoveredCell?.row === i && hoveredCell?.col === j && cellSize >= 14 && (
                         <div
                           className="absolute z-20 bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-[10px] font-mono whitespace-nowrap pointer-events-none shadow-lg"
@@ -270,17 +340,17 @@ export default function CorrelationHeatmap({
       </div>
 
       {/* Sector legend */}
-      <div className="flex flex-wrap gap-2 text-[10px] text-zinc-500">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-500">
         {Object.entries(SECTOR_COLORS).map(([sector, color]) => {
           const count = symbols.filter((s) => stockSectors[s] === sector).length;
           if (count === 0) return null;
           return (
             <span key={sector} className="flex items-center gap-1">
               <span
-                className="w-2 h-2 rounded-full inline-block"
+                className="w-2 h-2 rounded-full inline-block flex-shrink-0"
                 style={{ background: color }}
               />
-              <span className="truncate max-w-[100px]">
+              <span className="truncate max-w-[80px] sm:max-w-[120px]">
                 {sector.replace(/_/g, " ")}
               </span>
               <span className="text-zinc-600">({count})</span>

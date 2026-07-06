@@ -1,8 +1,9 @@
 """Correlation Analysis Service — Nifty 50 stock correlations across multiple timeframes."""
-
+import asyncio
 import logging
-import time
 import random
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from collections import defaultdict
@@ -12,10 +13,36 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Check whether nselib is available AND the NSE API is reachable
+_HAS_NSELIB = False
+_NSELIB_EXECUTOR = None
+try:
+    from nselib import capital_market
+    _NSELIB_EXECUTOR = ThreadPoolExecutor(max_workers=5)
+    # Quick probe — does the API actually respond?
+    try:
+        future = _NSELIB_EXECUTOR.submit(
+            capital_market.price_volume_data,
+            symbol="RELIANCE",
+            from_date="20-05-2026",
+            to_date="26-06-2026",
+        )
+        df = future.result(timeout=8)
+        _HAS_NSELIB = df is not None and not df.empty
+        if _HAS_NSELIB:
+            logger.info("nselib available — using live NSE data")
+        else:
+            logger.info("nselib returned empty data — using synthetic prices")
+    except (TimeoutError, Exception) as e:
+        logger.info("nselib API unreachable (%s) — using synthetic data", e)
+        _HAS_NSELIB = False
+except ImportError:
+    logger.info("nselib not installed — using synthetic price data")
+
 # ── Nifty 50 constituents with sector mapping ──
 # Sectors: Financial_Services, IT, Oil_Gas, FMCG, Auto, Pharma, Metals, Power, Telecom, Construction, Consumer, Media, Healthcare
 NIFTY_50_STOCKS = [
-    # Financial Services (8)
+    # Financial Services (10)
     {"symbol": "HDFCBANK",  "name": "HDFC Bank",            "sector": "Financial_Services"},
     {"symbol": "ICICIBANK", "name": "ICICI Bank",           "sector": "Financial_Services"},
     {"symbol": "KOTAKBANK", "name": "Kotak Mahindra Bank",  "sector": "Financial_Services"},
@@ -24,6 +51,8 @@ NIFTY_50_STOCKS = [
     {"symbol": "INDUSINDBK","name": "IndusInd Bank",         "sector": "Financial_Services"},
     {"symbol": "BAJFINANCE","name": "Bajaj Finance",        "sector": "Financial_Services"},
     {"symbol": "BAJAJFINSV","name": "Bajaj Finserv",        "sector": "Financial_Services"},
+    {"symbol": "HDFCLIFE",  "name": "HDFC Life Insurance",  "sector": "Financial_Services"},
+    {"symbol": "SBILIFE",   "name": "SBI Life Insurance",   "sector": "Financial_Services"},
     # IT (5)
     {"symbol": "TCS",       "name": "Tata Consultancy Services", "sector": "IT"},
     {"symbol": "INFY",      "name": "Infosys",              "sector": "IT"},
@@ -102,10 +131,15 @@ TIMEFRAME_LABELS = {
     756: "3 Years",
 }
 
+# Simple in-memory cache for fetched prices (key: days, value: (timestamp, prices_dict))
+_PRICE_CACHE: Dict[int, Tuple[float, Dict[str, List[float]]]] = {}
+_CACHE_TTL_SECONDS = 120  # 2 minutes
+
 # Base prices for fallback synthetic data (approximate realistic prices)
 _BASE_PRICES = {
     "HDFCBANK": 1720, "ICICIBANK": 1280, "KOTAKBANK": 1890, "AXISBANK": 1180,
-    "SBIN": 825, "INDUSINDBK": 1480, "BAJFINANCE": 7450, "BAJAJFINSV": 1720,
+    "SBIN": 825, "INDUSINDBK": 1480,    "BAJFINANCE": 7450, "BAJAJFINSV": 1720,
+    "HDFCLIFE": 680, "SBILIFE": 1450,
     "TCS": 3950, "INFY": 1820, "HCLTECH": 1920, "WIPRO": 295, "TECHM": 1650,
     "RELIANCE": 2850, "ONGC": 265, "BPCL": 620, "HINDPETRO": 470,
     "HINDUNILVR": 2450, "ITC": 485, "NESTLEIND": 2500, "BRITANNIA": 5200, "DABUR": 560,
@@ -141,29 +175,49 @@ class CorrelationService:
         }
 
     @staticmethod
-    def _fetch_historical_prices(symbol: str, days: int) -> Optional[pd.DataFrame]:
-        """Fetch historical daily data using nsepython. Returns DataFrame with 'close' column."""
+    async def _fetch_historical_prices(symbol: str, days: int) -> Optional[pd.DataFrame]:
+        """Fetch historical daily data using nselib (non-blocking). Returns DataFrame with 'close' column."""
+        if not _HAS_NSELIB:
+            return None
         try:
-            from nsepython import equity_history
-            end = datetime.now()
+            from nselib import capital_market
+            loop = asyncio.get_running_loop()
+            end = datetime.now(timezone.utc)
             start = end - timedelta(days=days + 30)  # buffer for weekends/holidays
-            df = equity_history(
-                symbol, "EQ",
-                start.strftime("%d-%m-%Y"),
-                end.strftime("%d-%m-%Y"),
+
+            df = await asyncio.wait_for(
+                loop.run_in_executor(
+                    _NSELIB_EXECUTOR,
+                    lambda: capital_market.price_volume_data(
+                        symbol=symbol,
+                        from_date=start.strftime("%d-%m-%Y"),
+                        to_date=end.strftime("%d-%m-%Y"),
+                    ),
+                ),
+                timeout=5,  # 5s per stock
             )
+
             if df is not None and not df.empty:
                 if isinstance(df, pd.DataFrame):
-                    if "CLOSE" in df.columns:
-                        df = df.rename(columns={
-                            "CLOSE": "close", "OPEN": "open", "HIGH": "high",
-                            "LOW": "low", "VOLUME": "volume",
-                        })
-                    df = df.sort_values("DATE" if "DATE" in df.columns else df.index.name or df.index[0])
+                    # nselib returns columns like 'Close Price', 'Open Price', etc. with spaces
+                    df = df.rename(columns={
+                        "Close Price": "close",
+                        "Open Price": "open",
+                        "High Price": "high",
+                        "Low Price": "low",
+                        "Total Traded Quantity": "volume",
+                        "Date": "DATE",
+                    })
+                    # Convert price/volume columns to numeric
+                    for col in ["close", "open", "high", "low", "volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.sort_values("DATE")
                     df = df.tail(days)
                     return df
+        except asyncio.TimeoutError:
+            logger.debug(f"nselib timed out for {symbol}")
         except Exception as e:
-            logger.debug(f"nsepython fetch failed for {symbol}: {e}")
+            logger.debug(f"nselib fetch failed for {symbol}: {e}")
         return None
 
     @staticmethod
@@ -185,29 +239,77 @@ class CorrelationService:
         return prices
 
     async def fetch_price_data(self, symbol: str, days: int) -> Optional[List[float]]:
-        """Fetch close prices for a symbol. Tries nsepython, falls back to synthetic."""
-        df = self._fetch_historical_prices(symbol, days)
+        """Fetch close prices for a symbol. Tries nselib, falls back to synthetic."""
+        df = await self._fetch_historical_prices(symbol, days)
         if df is not None and "close" in df.columns:
             return df["close"].dropna().tolist()
         return None
 
     async def fetch_all_prices(self, days: int) -> Dict[str, List[float]]:
-        """Fetch close prices for all Nifty 50 stocks. Returns dict of symbol -> prices."""
-        prices_dict = {}
-        failed_stocks = []
+        """Fetch close prices for all Nifty 50 stocks. Returns dict of symbol -> prices.
+        Uses in-memory cache to avoid re-fetching within CACHE_TTL_SECONDS.
+        Fetches stocks in parallel batches for speed, with a total timeout.
+        If nselib is too slow, falls back to synthetic data."""
+        now = time.time()
+        if days in _PRICE_CACHE:
+            cached_at, cached_data = _PRICE_CACHE[days]
+            if now - cached_at < _CACHE_TTL_SECONDS:
+                return cached_data
 
-        for i, stock in enumerate(NIFTY_50_STOCKS):
-            sym = stock["symbol"]
-            df = self._fetch_historical_prices(sym, days)
-            if df is not None and "close" in df.columns:
-                prices = df["close"].dropna().tolist()
-                if len(prices) >= days * 0.5:  # at least 50% of requested days
-                    prices_dict[sym] = prices
-                    continue
-            failed_stocks.append(sym)
-            # Small delay to avoid rate limiting
-            if i % 10 == 9:
-                time.sleep(1.5)
+        prices_dict: Dict[str, List[float]] = {}
+        failed_stocks: List[str] = []
+
+        if _HAS_NSELIB:
+            symbols = [s["symbol"] for s in NIFTY_50_STOCKS]
+            batch_size = 5
+
+            async def _fetch_batches() -> None:
+                """Fetch all stocks in parallel batches."""
+                nonlocal failed_stocks, prices_dict
+                batch_failures: List[str] = []
+                batch_successes: Dict[str, List[float]] = {}
+
+                for batch_start in range(0, len(symbols), batch_size):
+                    batch = symbols[batch_start:batch_start + batch_size]
+                    results = await asyncio.gather(*[
+                        self._fetch_historical_prices(sym, days) for sym in batch
+                    ], return_exceptions=True)
+
+                    for sym, df in zip(batch, results):
+                        if isinstance(df, Exception):
+                            batch_failures.append(sym)
+                        elif df is not None and "close" in df.columns:
+                            prices = df["close"].dropna().tolist()
+                            if len(prices) >= days * 0.5:
+                                batch_successes[sym] = prices
+                                continue
+                        batch_failures.append(sym)
+
+                    # Brief cooldown between batches to avoid rate limiting
+                    if batch_start + batch_size < len(symbols):
+                        await asyncio.sleep(1.0)
+
+                failed_stocks = batch_failures
+                prices_dict = batch_successes
+
+            # 50 stocks × 5s max per stock / 5 per batch = ~50s + 9s cooldown ≈ 60s
+            # Use 90s for safety margin — this is a one-time cost (cached for 2 min)
+            total_timeout = 90
+            try:
+                await asyncio.wait_for(_fetch_batches(), timeout=total_timeout)
+                logger.info(
+                    "nselib fetched %d/%d stocks (%.0fs timeout)",
+                    len(prices_dict), len(symbols), total_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "nselib fetch timed out after %.0fs — falling back to synthetic data",
+                    total_timeout,
+                )
+                failed_stocks = symbols  # fall back all to synthetic
+                prices_dict = {}
+        else:
+            failed_stocks = [s["symbol"] for s in NIFTY_50_STOCKS]
 
         # Generate synthetic data for failed stocks
         for sym in failed_stocks:
@@ -215,7 +317,11 @@ class CorrelationService:
 
         # Align all price series to the same length
         min_len = min(len(p) for p in prices_dict.values())
-        return {sym: p[-min_len:] for sym, p in prices_dict.items()}
+        result = {sym: p[-min_len:] for sym, p in prices_dict.items()}
+
+        # Cache the result
+        _PRICE_CACHE[days] = (time.time(), result)
+        return result
 
     @staticmethod
     def compute_returns(prices: List[float]) -> np.ndarray:
@@ -249,6 +355,9 @@ class CorrelationService:
                     corr = 0.0
                 else:
                     corr = float(np.corrcoef(ri, rj)[0, 1])
+                    # Handle NaN (occurs when one series has zero variance)
+                    if np.isnan(corr):
+                        corr = 0.0
                     corr = round(max(-1, min(1, corr)), 4)
                 matrix[i][j] = corr
                 matrix[j][i] = corr
@@ -278,10 +387,7 @@ class CorrelationService:
             "sector_correlation": sector_corr,
             "timeframe": timeframe,
             "timeframe_label": TIMEFRAME_LABELS.get(timeframe, f"{timeframe} Days"),
-            "data_source": "nsepython_live" if any(
-                self._fetch_historical_prices(s["symbol"], 5) is not None
-                for s in NIFTY_50_STOCKS[:3]
-            ) else "synthetic_fallback",
+            "data_source": "nselib_live" if _HAS_NSELIB else "synthetic_fallback",
             "computed_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -308,7 +414,7 @@ class CorrelationService:
     async def compute_pair_analytics(
         self, sym1: str, sym2: str, timeframe: int = 252
     ) -> Dict[str, Any]:
-        """Detailed analysis for a specific pair — rolling correlation, spread, z-score, lead-lag."""
+        """Detailed analysis for a specific pair - rolling correlation, spread, z-score, lead-lag."""
         prices_dict = await self.fetch_all_prices(timeframe)
         p1 = prices_dict.get(sym1, [])
         p2 = prices_dict.get(sym2, [])

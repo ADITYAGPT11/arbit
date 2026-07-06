@@ -8,9 +8,11 @@ Write-Host "Stopping ArbitPRO..." -ForegroundColor Yellow
 @(8000, 3000) | ForEach-Object {
     $p = netstat -ano | Select-String ":$_ " | Select-String "LISTENING"
     if ($p) {
-        $pid = ($p -split '\s+')[-1]
-        Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
-        Write-Host "  Port $_ (PID $pid): stopped" -ForegroundColor Green
+        $procId = ($p -split '\s+')[-1]
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        Write-Host "  Port $_ (PID $procId): stopped" -ForegroundColor Green
+    } else {
+        Write-Host ("  Port " + $_ + ": nothing running") -ForegroundColor Gray
     }
 }
 

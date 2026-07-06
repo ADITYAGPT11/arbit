@@ -375,8 +375,8 @@ export default function RiskManagement() {
                     Leverage: {marginResult.leverage}x
                   </span>
                 </div>
-                <div className="h-32">
-                  <ResponsiveContainer width="100%" height="100%">
+                <div className="h-32 min-w-0">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     <PieChart>
                       <Pie
                         data={marginPieData}

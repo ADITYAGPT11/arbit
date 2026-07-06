@@ -181,8 +181,8 @@ export default function PerformanceAnalytics() {
             <span className="card-title">Equity Curve</span>
             <TrendingUp className="w-4 h-4 text-green-500" />
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-64 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <AreaChart data={equityCurve}>
                 <defs>
                   <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
@@ -228,8 +228,8 @@ export default function PerformanceAnalytics() {
             <span className="card-title">Drawdown</span>
             <TrendingDown className="w-4 h-4 text-red-500" />
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-64 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <AreaChart data={equityCurve}>
                 <defs>
                   <linearGradient id="drawdownGradient" x1="0" y1="0" x2="0" y2="1">
@@ -277,8 +277,8 @@ export default function PerformanceAnalytics() {
             <span className="card-title">PnL by Weekday</span>
             <BarChart3 className="w-4 h-4 text-zinc-500" />
           </div>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-48 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <BarChart data={weekdayChartData}>
                 <XAxis
                   dataKey="day"
@@ -318,8 +318,8 @@ export default function PerformanceAnalytics() {
             <span className="card-title">Win Rate by Weekday</span>
             <Target className="w-4 h-4 text-zinc-500" />
           </div>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-48 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <BarChart data={weekdayChartData}>
                 <XAxis
                   dataKey="day"

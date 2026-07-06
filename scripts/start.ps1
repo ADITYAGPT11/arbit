@@ -15,15 +15,15 @@ Write-Host "> Cleaning up old processes..." -ForegroundColor Yellow
 @(8000, 3000) | ForEach-Object {
     $p = netstat -ano | Select-String ":$_ " | Select-String "LISTENING"
     if ($p) {
-        $pid = ($p -split '\s+')[-1]
-        Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        $procId = ($p -split '\s+')[-1]
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
     }
 }
 Start-Sleep -Seconds 1
 
 # Start backend (new window)
 Write-Host "> Starting Backend (localhost:8000)..." -ForegroundColor Yellow
-Start-Process -FilePath "cmd.exe" -ArgumentList "/K", "uvicorn server:app --reload --host 0.0.0.0 --port 8000" `
+Start-Process -FilePath "cmd.exe" -ArgumentList "/K", ".venv\Scripts\activate && uvicorn server:app --reload --host 0.0.0.0 --port 8000" `
     -WorkingDirectory $BackendDir -WindowStyle Normal
 
 # Start frontend (new window)

@@ -19,7 +19,7 @@ import ConnectBroker from "./pages/ConnectBroker";
 import CorrelationAnalysis from "./pages/CorrelationAnalysis";
 import Layout from "./components/Layout";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
 
 // App Router — all pages public, no auth required

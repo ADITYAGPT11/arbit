@@ -1,9 +1,10 @@
 """Correlation Analysis Routes — Nifty 50 stock correlation endpoints."""
 
 import logging
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Body
 
 from services.correlation_service import correlation_service
+from services.correlation_signal_service import correlation_signal_service, BacktestParams
 
 logger = logging.getLogger(__name__)
 
@@ -63,3 +64,102 @@ async def get_sector_correlation(
         "timeframe": timeframe,
         "timeframe_label": result["timeframe_label"],
     }
+
+
+# ── Pair Rankings & Optimal Parameters ──
+
+
+@router.get("/pair-rankings")
+async def get_pair_rankings(
+    max_days: int = Query(252, description="Max lookback period", ge=60, le=756),
+    include_all: bool = Query(False, description="Include all 1225 pairs (not just best/worst 10)"),
+):
+    """Comprehensive pair rankings for ALL 1225 pairs.
+
+    Returns best 10 and worst 10 pairs ranked by a composite tradability score.
+    Each entry includes:
+    - Correlation at 5d, 10d, 20d, 60d, 126d, 252d
+    - Consistency across timeframes
+    - Cointegration p-value and half-life
+    - Composite score (0-100)
+    - Current live signal (z-score, signal direction, entry/stop levels)
+
+    Set include_all=true to get ALL 1225 pairs (for the Correlation List view).
+    """
+    result = await correlation_signal_service.compute_pair_rankings(max_days=max_days, include_all=include_all)
+    return result
+
+
+@router.get("/optimal-params")
+async def get_optimal_params(
+    max_days: int = Query(252, description="Max lookback period", ge=60, le=756),
+):
+    """Find optimal strategy parameters via grid search on top-ranked pairs.
+
+    Tests different values for entry_z, exit_z, stop_z, rolling_window,
+    and use_hedge_ratio. Returns the best combination found.
+    """
+    result = await correlation_signal_service.find_optimal_params(max_days=max_days)
+    return result
+
+
+# ── Pairs Trading Signals & Backtesting ──
+
+
+@router.get("/signals")
+async def get_signals(
+    min_z: float = Query(1.5, description="Minimum |z-score| to trigger a signal", ge=0.5, le=5.0),
+    timeframe: int = Query(60, description="Lookback period for signal calculation", ge=20, le=756),
+    limit: int = Query(20, description="Max signals to return", ge=1, le=50),
+    require_cointegrated: bool = Query(False, description="Only show signals for cointegrated pairs"),
+):
+    """Scan all pairs and return active trading signals based on z-score extremes."""
+    result = await correlation_signal_service.generate_signals(
+        min_z=min_z, timeframe=timeframe, limit=limit,
+        require_cointegrated=require_cointegrated,
+    )
+    return result
+
+
+@router.post("/backtest")
+async def run_backtest(
+    sym1: str = Body(..., description="First stock symbol"),
+    sym2: str = Body(..., description="Second stock symbol"),
+    days: int = Body(252, description="Lookback period in trading days"),
+    entry_z: float = Body(2.0, description="Z-score entry threshold"),
+    exit_z: float = Body(0.0, description="Z-score exit threshold"),
+    stop_z: float = Body(3.0, description="Z-score stop-loss threshold"),
+    rolling_window: int = Body(20, description="Rolling window for z-score"),
+    use_log_ratio: bool = Body(False, description="Use log ratio instead of raw ratio"),
+    # New strategy improvements
+    use_hedge_ratio: bool = Body(True, description="Use rolling OLS hedge ratio for stationary spread"),
+    beta_window: int = Body(60, description="Rolling window for OLS beta estimation"),
+    require_cointegrated: bool = Body(True, description="Skip pair if not cointegrated (Engle-Granger test)"),
+    coint_pvalue: float = Body(0.05, description="Cointegration significance threshold"),
+    transaction_cost_pct: float = Body(0.05, description="Per-side transaction cost in %% (brokerage + STT + slippage)"),
+):
+    """Run a historical backtest on a pair using the mean-reversion strategy.
+
+    Improvements over v1:
+    - Cointegration filter (Engle-Granger) — only trades if pair is truly mean-reverting
+    - Dynamic hedge ratio (rolling OLS β) — creates a stationary spread instead of raw ratio
+    - Transaction cost model — per-side cost for realistic P&L
+    """
+    sym1 = sym1.upper()
+    sym2 = sym2.upper()
+    params = BacktestParams(
+        entry_z=entry_z,
+        exit_z=exit_z,
+        stop_z=stop_z,
+        rolling_window=rolling_window,
+        use_log_ratio=use_log_ratio,
+        use_hedge_ratio=use_hedge_ratio,
+        beta_window=beta_window,
+        require_cointegrated=require_cointegrated,
+        coint_pvalue=coint_pvalue,
+        transaction_cost_pct=transaction_cost_pct,
+    )
+    result = await correlation_signal_service.backtest_pair(
+        sym1, sym2, days=days, params=params
+    )
+    return result

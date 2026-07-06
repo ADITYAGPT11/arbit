@@ -125,7 +125,6 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -147,6 +146,24 @@ async def startup_event():
                 _ss.start_background_refresher()
         except Exception as e:
             logger.warning("System auto-login bootstrap failed: %s", e)
+
+    # ── Pre-warm NSE price cache in background — server starts immediately ──
+    async def _warm_cache():
+        try:
+            from services.correlation_service import correlation_service
+            import time
+            logger.info("Pre-warming NSE price cache (20-day) in background...")
+            t0 = time.time()
+            await asyncio.wait_for(
+                correlation_service.fetch_all_prices(20),
+                timeout=120,
+            )
+            elapsed = time.time() - t0
+            logger.info("Price cache warmed in %.1fs — first load will be instant", elapsed)
+        except Exception as e:
+            logger.warning("Price cache pre-warm failed (%s) — will lazy-load on first request", e)
+
+    asyncio.create_task(_warm_cache())
 
 @app.on_event("shutdown")
 async def shutdown_event():

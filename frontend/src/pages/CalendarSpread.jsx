@@ -253,8 +253,8 @@ export default function CalendarSpread() {
               {/* Spread Chart */}
               <div>
                 <h4 className="text-sm font-medium mb-3">Spread History (Sample)</h4>
-                <div className="h-32">
-                  <ResponsiveContainer width="100%" height="100%">
+                <div className="h-32 min-w-0">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     <BarChart data={spreadHistory}>
                       <XAxis
                         dataKey="day"

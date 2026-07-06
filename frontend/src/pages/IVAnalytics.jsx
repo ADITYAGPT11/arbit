@@ -234,9 +234,9 @@ export default function IVAnalytics() {
                 <span className="card-title">IV Smile / Skew</span>
                 <span className="text-xs text-zinc-500">{data.underlying} {data.expiry}</span>
               </div>
-              <div className="h-64">
+              <div className="h-64 min-w-0">
                 {skewData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     <LineChart data={skewData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#262626" />
                       <XAxis dataKey="strike" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false}
@@ -265,9 +265,9 @@ export default function IVAnalytics() {
                   <span className="text-xs text-purple-400 font-mono">{maxPain?.max_pain_strike?.toLocaleString("en-IN")}</span>
                 </div>
               </div>
-              <div className="h-64">
+              <div className="h-64 min-w-0">
                 {painData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     <BarChart data={painData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#262626" />
                       <XAxis dataKey="strike" tick={{ fill: "#71717a", fontSize: 9 }} axisLine={false} tickLine={false}
