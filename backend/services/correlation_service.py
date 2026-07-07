@@ -1,9 +1,8 @@
 """Correlation Analysis Service — Nifty 50 stock correlations across multiple timeframes."""
 import asyncio
 import logging
-import random
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from collections import defaultdict
@@ -13,31 +12,12 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Check whether nselib is available AND the NSE API is reachable
-_HAS_NSELIB = False
-_NSELIB_EXECUTOR = None
-try:
-    from nselib import capital_market
-    _NSELIB_EXECUTOR = ThreadPoolExecutor(max_workers=5)
-    # Quick probe — does the API actually respond?
-    try:
-        future = _NSELIB_EXECUTOR.submit(
-            capital_market.price_volume_data,
-            symbol="RELIANCE",
-            from_date="20-05-2026",
-            to_date="26-06-2026",
-        )
-        df = future.result(timeout=8)
-        _HAS_NSELIB = df is not None and not df.empty
-        if _HAS_NSELIB:
-            logger.info("nselib available — using live NSE data")
-        else:
-            logger.info("nselib returned empty data — using synthetic prices")
-    except (TimeoutError, Exception) as e:
-        logger.info("nselib API unreachable (%s) — using synthetic data", e)
-        _HAS_NSELIB = False
-except ImportError:
-    logger.info("nselib not installed — using synthetic price data")
+# ── nselib: sole data source for all price data ──
+from nselib import capital_market
+
+_NSELIB_EXECUTOR = ThreadPoolExecutor(max_workers=5)
+
+logger.info("nselib loaded — using live NSE data for all price fetches")
 
 # ── Nifty 50 constituents with sector mapping ──
 # Sectors: Financial_Services, IT, Oil_Gas, FMCG, Auto, Pharma, Metals, Power, Telecom, Construction, Consumer, Media, Healthcare
@@ -131,27 +111,18 @@ TIMEFRAME_LABELS = {
     756: "3 Years",
 }
 
+# Top 10 most liquid Nifty 50 stocks (by trading volume) — used as default for faster load times
+TOP_10_STOCKS = [s for s in NIFTY_50_STOCKS if s["symbol"] in {
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
+    "HINDUNILVR", "SBIN", "BAJFINANCE", "BHARTIARTL", "ITC",
+}]
+
 # Simple in-memory cache for fetched prices (key: days, value: (timestamp, prices_dict))
 _PRICE_CACHE: Dict[int, Tuple[float, Dict[str, List[float]]]] = {}
 _CACHE_TTL_SECONDS = 120  # 2 minutes
 
-# Base prices for fallback synthetic data (approximate realistic prices)
-_BASE_PRICES = {
-    "HDFCBANK": 1720, "ICICIBANK": 1280, "KOTAKBANK": 1890, "AXISBANK": 1180,
-    "SBIN": 825, "INDUSINDBK": 1480,    "BAJFINANCE": 7450, "BAJAJFINSV": 1720,
-    "HDFCLIFE": 680, "SBILIFE": 1450,
-    "TCS": 3950, "INFY": 1820, "HCLTECH": 1920, "WIPRO": 295, "TECHM": 1650,
-    "RELIANCE": 2850, "ONGC": 265, "BPCL": 620, "HINDPETRO": 470,
-    "HINDUNILVR": 2450, "ITC": 485, "NESTLEIND": 2500, "BRITANNIA": 5200, "DABUR": 560,
-    "MARUTI": 11200, "TATAMOTORS": 780, "M&M": 2050,    "BAJAJ-AUTO": 9500, "EICHERMOT": 4500,
-    "SUNPHARMA": 1850, "DIVISLAB": 3800, "CIPLA": 1520, "DRREDDY": 5400,
-    "TATASTEEL": 155, "JSWSTEEL": 920, "HINDALCO": 680,
-    "NTPC": 385, "POWERGRID": 325, "ADANIGREEN": 1800,
-    "BHARTIARTL": 1650,
-    "LT": 3650, "ULTRACEMCO": 11800, "ADANIPORTS": 1300, "GRASIM": 2600,
-    "TITAN": 3520, "ASIANPAINT": 2280, "TRENT": 1500,    "DMART": 4200,
-    "APOLLOHOSP": 6200, "ZEEL": 145,
-}
+# Async lock to protect _PRICE_CACHE reads/writes from concurrent coroutines
+_CACHE_LOCK = asyncio.Lock()
 
 
 class CorrelationService:
@@ -177,10 +148,7 @@ class CorrelationService:
     @staticmethod
     async def _fetch_historical_prices(symbol: str, days: int) -> Optional[pd.DataFrame]:
         """Fetch historical daily data using nselib (non-blocking). Returns DataFrame with 'close' column."""
-        if not _HAS_NSELIB:
-            return None
         try:
-            from nselib import capital_market
             loop = asyncio.get_running_loop()
             end = datetime.now(timezone.utc)
             start = end - timedelta(days=days + 30)  # buffer for weekends/holidays
@@ -194,133 +162,167 @@ class CorrelationService:
                         to_date=end.strftime("%d-%m-%Y"),
                     ),
                 ),
-                timeout=5,  # 5s per stock
+                timeout=15,  # 15s per stock (nselib can be slow for large requests)
             )
 
             if df is not None and not df.empty:
                 if isinstance(df, pd.DataFrame):
-                    # nselib returns columns like 'Close Price', 'Open Price', etc. with spaces
+                    # nselib v2.5.1 columns: 'ClosePrice', 'OpenPrice', 'HighPrice', 'LowPrice', 'TotalTradedQuantity'
                     df = df.rename(columns={
-                        "Close Price": "close",
-                        "Open Price": "open",
-                        "High Price": "high",
-                        "Low Price": "low",
-                        "Total Traded Quantity": "volume",
+                        "ClosePrice": "close",
+                        "OpenPrice": "open",
+                        "HighPrice": "high",
+                        "LowPrice": "low",
+                        "TotalTradedQuantity": "volume",
                         "Date": "DATE",
                     })
-                    # Convert price/volume columns to numeric
+                    # Strip commas from number strings (nselib returns Indian-format like "1,037.70")
+                    for col in ["close", "open", "high", "low", "volume"]:
+                        df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+                    # Convert to numeric
                     for col in ["close", "open", "high", "low", "volume"]:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
+                    # Normalize DATE to YYYY-MM-DD strings — filter out unparseable dates first
+                    # to avoid 'NaT' strings leaking into chart data
+                    dates_dt = pd.to_datetime(df["DATE"], format="mixed", errors="coerce")
+                    valid_dates = dates_dt.notna()
+                    df = df[valid_dates].copy()
+                    df["DATE"] = dates_dt[valid_dates].dt.strftime("%Y-%m-%d")
                     df = df.sort_values("DATE")
                     df = df.tail(days)
                     return df
         except asyncio.TimeoutError:
-            logger.debug(f"nselib timed out for {symbol}")
+            logger.error(f"nselib timed out for {symbol}")
+            raise
         except Exception as e:
-            logger.debug(f"nselib fetch failed for {symbol}: {e}")
+            logger.error(f"nselib fetch failed for {symbol}: {e}")
+            raise
         return None
 
-    @staticmethod
-    def _generate_synthetic_prices(symbol: str, days: int, seed_offset: int = 0) -> List[float]:
-        """Fallback: generate correlated synthetic prices when nsepython fails.
-        Uses local Random/RNG instances so global random state is never touched."""
-        base = _BASE_PRICES.get(symbol, 1000)
-        seed = hash(symbol) % 10000 + seed_offset
-        rng = random.Random(seed)
-        nrng = np.random.default_rng(seed)
-
-        prices = [base]
-        vol = 0.012 + (seed % 50) * 0.0002  # 1.2-2.2% daily vol
-        drift = 0.0003 + (seed % 30) * 0.00001  # slight upward bias
-
-        for _ in range(days):
-            ret = float(nrng.normal(drift, vol))
-            prices.append(round(prices[-1] * (1 + ret), 2))
-        return prices
-
     async def fetch_price_data(self, symbol: str, days: int) -> Optional[List[float]]:
-        """Fetch close prices for a symbol. Tries nselib, falls back to synthetic."""
+        """Fetch close prices for a symbol from nselib (live NSE data only)."""
         df = await self._fetch_historical_prices(symbol, days)
         if df is not None and "close" in df.columns:
             return df["close"].dropna().tolist()
         return None
 
-    async def fetch_all_prices(self, days: int) -> Dict[str, List[float]]:
-        """Fetch close prices for all Nifty 50 stocks. Returns dict of symbol -> prices.
+    async def fetch_ohlc(self, symbol: str, days: int) -> Optional[Dict[str, List]]:
+        """Fetch OHLC + volume + dates for a symbol.
+
+        Returns a dict with aligned lists: dates, open, high, low, close, volume.
+        Useful for candlestick charts on the frontend.
+
+        Filters out any row where ANY OHLCV field is NaN to ensure all output
+        arrays have the same length and align correctly by index.
+        """
+        df = await self._fetch_historical_prices(symbol, days)
+        if df is None or df.empty:
+            return None
+        # Filter rows where ALL OHLCV columns are valid (keeps arrays aligned)
+        ohlc_cols = ["open", "high", "low", "close", "volume"]
+        mask = df[ohlc_cols].notna().all(axis=1)
+        filtered = df[mask]
+        if filtered.empty:
+            return None
+        # Build aligned dict
+        ohlc = {
+            "dates": filtered["DATE"].tolist() if "DATE" in filtered.columns else [],
+            "open": [round(float(x), 2) for x in filtered["open"]],
+            "high": [round(float(x), 2) for x in filtered["high"]],
+            "low": [round(float(x), 2) for x in filtered["low"]],
+            "close": [round(float(x), 2) for x in filtered["close"]],
+            "volume": [int(float(x)) for x in filtered["volume"]],
+        }
+        return ohlc
+
+    async def fetch_all_prices(self, days: int, top_n: int = 0) -> Dict[str, List[float]]:
+        """Fetch close prices for Nifty 50 stocks from nselib (live NSE data only).
+
+        Args:
+            days: Lookback period in trading days.
+            top_n: If > 0, only fetch the top N most liquid stocks (faster).
+
         Uses in-memory cache to avoid re-fetching within CACHE_TTL_SECONDS.
         Fetches stocks in parallel batches for speed, with a total timeout.
-        If nselib is too slow, falls back to synthetic data."""
-        now = time.time()
-        if days in _PRICE_CACHE:
-            cached_at, cached_data = _PRICE_CACHE[days]
-            if now - cached_at < _CACHE_TTL_SECONDS:
-                return cached_data
+        Raises RuntimeError if any stock fails to fetch — no synthetic fallback.
 
+        Thread-safe: protected by _CACHE_LOCK so concurrent requests for the same
+        `days` don't trigger duplicate fetches.
+        """
+        async with _CACHE_LOCK:
+            now = time.time()
+            if days in _PRICE_CACHE:
+                cached_at, cached_data = _PRICE_CACHE[days]
+                if now - cached_at < _CACHE_TTL_SECONDS:
+                    return cached_data
+
+        # The lock is released during the long fetch so other callers aren't blocked.
+        # If two coroutines both miss cache for the same `days`, both will fetch (~60s
+        # of duplicate work) — acceptable for a 120s TTL and avoids holding the lock
+        # for the entire duration.
+
+        stock_list = TOP_10_STOCKS if top_n > 0 else NIFTY_50_STOCKS
+        symbols = [s["symbol"] for s in stock_list]
+        batch_size = 5
         prices_dict: Dict[str, List[float]] = {}
-        failed_stocks: List[str] = []
+        failures: List[str] = []
 
-        if _HAS_NSELIB:
-            symbols = [s["symbol"] for s in NIFTY_50_STOCKS]
-            batch_size = 5
+        async def _fetch_batches() -> None:
+            """Fetch all stocks in parallel batches."""
+            nonlocal failures, prices_dict
 
-            async def _fetch_batches() -> None:
-                """Fetch all stocks in parallel batches."""
-                nonlocal failed_stocks, prices_dict
-                batch_failures: List[str] = []
-                batch_successes: Dict[str, List[float]] = {}
+            for batch_start in range(0, len(symbols), batch_size):
+                batch = symbols[batch_start:batch_start + batch_size]
+                results = await asyncio.gather(*[
+                    self._fetch_historical_prices(sym, days) for sym in batch
+                ], return_exceptions=True)
 
-                for batch_start in range(0, len(symbols), batch_size):
-                    batch = symbols[batch_start:batch_start + batch_size]
-                    results = await asyncio.gather(*[
-                        self._fetch_historical_prices(sym, days) for sym in batch
-                    ], return_exceptions=True)
+                for sym, df in zip(batch, results):
+                    if isinstance(df, Exception):
+                        logger.error(f"Failed to fetch {sym}: {df}")
+                        failures.append(sym)
+                    elif df is not None and "close" in df.columns:
+                        prices = df["close"].dropna().tolist()
+                        if len(prices) >= days * 0.5:
+                            prices_dict[sym] = prices
+                        else:
+                            logger.error(f"Insufficient data for {sym}: got {len(prices)} days, need {days * 0.5}")
+                            failures.append(sym)
+                    else:
+                        logger.error(f"No data returned for {sym}")
+                        failures.append(sym)
 
-                    for sym, df in zip(batch, results):
-                        if isinstance(df, Exception):
-                            batch_failures.append(sym)
-                        elif df is not None and "close" in df.columns:
-                            prices = df["close"].dropna().tolist()
-                            if len(prices) >= days * 0.5:
-                                batch_successes[sym] = prices
-                                continue
-                        batch_failures.append(sym)
+                # Brief cooldown between batches to avoid rate limiting
+                if batch_start + batch_size < len(symbols):
+                    await asyncio.sleep(1.0)
 
-                    # Brief cooldown between batches to avoid rate limiting
-                    if batch_start + batch_size < len(symbols):
-                        await asyncio.sleep(1.0)
+        # 50 stocks × 15s max per stock / 5 per batch = ~150s + 9s cooldown ≈ 160s
+        # Use 300s (5 min) — this is a one-time cost (cached for 2 min) and nselib can be slow
+        total_timeout = 300
+        try:
+            await asyncio.wait_for(_fetch_batches(), timeout=total_timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"nselib fetch timed out after {total_timeout}s — {len(prices_dict)}/{len(symbols)} stocks fetched. "
+                f"The NSE API may be slow or unavailable. Failed: {failures}"
+            )
 
-                failed_stocks = batch_failures
-                prices_dict = batch_successes
+        if failures:
+            raise RuntimeError(
+                f"Failed to fetch {len(failures)}/{len(symbols)} stocks from nselib: {', '.join(failures)}. "
+                f"Cannot proceed with correlation analysis — no synthetic fallback available."
+            )
 
-            # 50 stocks × 5s max per stock / 5 per batch = ~50s + 9s cooldown ≈ 60s
-            # Use 90s for safety margin — this is a one-time cost (cached for 2 min)
-            total_timeout = 90
-            try:
-                await asyncio.wait_for(_fetch_batches(), timeout=total_timeout)
-                logger.info(
-                    "nselib fetched %d/%d stocks (%.0fs timeout)",
-                    len(prices_dict), len(symbols), total_timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "nselib fetch timed out after %.0fs — falling back to synthetic data",
-                    total_timeout,
-                )
-                failed_stocks = symbols  # fall back all to synthetic
-                prices_dict = {}
-        else:
-            failed_stocks = [s["symbol"] for s in NIFTY_50_STOCKS]
-
-        # Generate synthetic data for failed stocks
-        for sym in failed_stocks:
-            prices_dict[sym] = self._generate_synthetic_prices(sym, days)
+        logger.info("nselib fetched %d/%d stocks successfully", len(prices_dict), len(symbols))
 
         # Align all price series to the same length
         min_len = min(len(p) for p in prices_dict.values())
         result = {sym: p[-min_len:] for sym, p in prices_dict.items()}
 
-        # Cache the result
-        _PRICE_CACHE[days] = (time.time(), result)
+        # Cache the result under lock
+        async with _CACHE_LOCK:
+            _PRICE_CACHE[days] = (time.time(), result)
+
         return result
 
     @staticmethod
@@ -329,11 +331,12 @@ class CorrelationService:
         arr = np.array(prices, dtype=float)
         return np.diff(np.log(arr))
 
-    async def compute_matrix(self, timeframe: int = 20) -> Dict[str, Any]:
-        """Compute the full correlation matrix for all Nifty 50 stocks."""
-        prices_dict = await self.fetch_all_prices(timeframe)
+    async def compute_matrix(self, timeframe: int = 20, top_n: int = 10) -> Dict[str, Any]:
+        """Compute the full correlation matrix for Nifty 50 stocks (or top N liquid)."""
+        prices_dict = await self.fetch_all_prices(timeframe, top_n=top_n)
 
-        symbols = [s["symbol"] for s in NIFTY_50_STOCKS]
+        stock_list = TOP_10_STOCKS if top_n > 0 else NIFTY_50_STOCKS
+        symbols = [s["symbol"] for s in stock_list]
         n = len(symbols)
         matrix = np.zeros((n, n))
         pairs = []
@@ -379,7 +382,7 @@ class CorrelationService:
         return {
             "symbols": symbols,
             "stocks": [{"symbol": s, "sector": next(
-                st["sector"] for st in NIFTY_50_STOCKS if st["symbol"] == s
+                st["sector"] for st in stock_list if st["symbol"] == s
             )} for s in symbols],
             "sectors": self.get_sectors(),
             "matrix": matrix.tolist(),
@@ -387,7 +390,7 @@ class CorrelationService:
             "sector_correlation": sector_corr,
             "timeframe": timeframe,
             "timeframe_label": TIMEFRAME_LABELS.get(timeframe, f"{timeframe} Days"),
-            "data_source": "nselib_live" if _HAS_NSELIB else "synthetic_fallback",
+            "data_source": "nselib_live",
             "computed_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -412,10 +415,14 @@ class CorrelationService:
         return result
 
     async def compute_pair_analytics(
-        self, sym1: str, sym2: str, timeframe: int = 252
+        self, sym1: str, sym2: str, timeframe: int = 252, top_n: int = 0
     ) -> Dict[str, Any]:
-        """Detailed analysis for a specific pair - rolling correlation, spread, z-score, lead-lag."""
-        prices_dict = await self.fetch_all_prices(timeframe)
+        """Detailed analysis for a specific pair - rolling correlation, spread, z-score, lead-lag.
+
+        Uses top_n=0 (all stocks) by default since the user explicitly selected this pair
+        and the symbols may not be in the top 10 liquid stocks.
+        """
+        prices_dict = await self.fetch_all_prices(timeframe, top_n=top_n)
         p1 = prices_dict.get(sym1, [])
         p2 = prices_dict.get(sym2, [])
 
@@ -540,11 +547,17 @@ class CorrelationService:
                 best_lag = lag
 
         if best_lag > 0:
-            leader = sym1
-            follower = sym2
-        elif best_lag < 0:
+            # lag > 0: r1 = ret1[lag:] (A forward), r2 = ret2[:-lag] (B early)
+            # i.e. corr(A[t+lag], B[t]) — A[t+lag] predicted by B[t]
+            # This means B LEADS A by `lag` days.
             leader = sym2
             follower = sym1
+        elif best_lag < 0:
+            # lag < 0: r1 = ret1[:lag] (A early), r2 = ret2[-lag:] (B forward)
+            # i.e. corr(A[t], B[t+|lag|]) — B[t+|lag|] predicted by A[t]
+            # This means A LEADS B by |lag| days.
+            leader = sym1
+            follower = sym2
         else:
             leader, follower = "Neither", "Neither"
 
@@ -557,10 +570,10 @@ class CorrelationService:
 
     async def get_top_pairs(
         self, timeframe: int = 20, min_corr: float = 0.0,
-        limit: int = 20, sector: str = "all"
+        limit: int = 20, sector: str = "all", top_n: int = 10
     ) -> Dict[str, Any]:
         """Get top correlated pairs with metadata."""
-        result = await self.compute_matrix(timeframe)
+        result = await self.compute_matrix(timeframe, top_n=top_n)
         pairs = result["pairs"]
 
         # Filter by sector

@@ -7,8 +7,10 @@ Improvements over v1:
 - Half-life estimation — reports how quickly the spread reverts
 """
 
+import asyncio
 import logging
 import math
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -20,15 +22,10 @@ from services.correlation_service import correlation_service
 
 logger = logging.getLogger(__name__)
 
-# ── Optional statsmodels (cointegration, OLS) ──
-_HAS_STATSMODELS = False
-try:
-    from statsmodels.tsa.stattools import coint, adfuller
-    from statsmodels.regression.linear_model import OLS
-    import statsmodels.api as sm
-    _HAS_STATSMODELS = True
-except ImportError:
-    logger.warning("statsmodels not installed — cointegration filter and hedge ratio disabled")
+# ── Required: statsmodels (cointegration, OLS) ──
+from statsmodels.tsa.stattools import coint, adfuller
+from statsmodels.regression.linear_model import OLS
+import statsmodels.api as sm
 
 
 @dataclass
@@ -112,7 +109,7 @@ class CorrelationSignalService:
         Returns:
             (is_cointegrated, p_value, half_life_days)
         """
-        if not _HAS_STATSMODELS or len(prices1) < 30 or len(prices2) < 30:
+        if len(prices1) < 30 or len(prices2) < 30:
             return False, 1.0, 0.0
 
         a = np.array(prices1, dtype=float)
@@ -139,7 +136,7 @@ class CorrelationSignalService:
         Half-life = -ln(2) / γ  (where γ < 0 indicates mean reversion).
         Returns 0 if not computable, 999 if not mean-reverting.
         """
-        if not _HAS_STATSMODELS or len(spread) < 30:
+        if len(spread) < 30:
             return 0.0
         try:
             y = np.diff(spread)
@@ -163,7 +160,7 @@ class CorrelationSignalService:
 
         Returns β series (NaN for first `window` points).
         """
-        if not _HAS_STATSMODELS or len(arr1) < window + 5:
+        if len(arr1) < window + 5:
             return np.full_like(arr1, 1.0)
 
         betas = np.full_like(arr1, np.nan)
@@ -195,7 +192,7 @@ class CorrelationSignalService:
         Returns:
             (spread_values, beta_values_or_None)
         """
-        if params.use_hedge_ratio and _HAS_STATSMODELS:
+        if params.use_hedge_ratio:
             betas = CorrelationSignalService._compute_rolling_beta(
                 arr1, arr2, params.beta_window
             )
@@ -256,79 +253,28 @@ class CorrelationSignalService:
 
         return raw_ret, net_ret
 
-    # ── Backtest ──
+    # ── Shared trading loop (extracted to avoid duplication) ──
 
-    async def backtest_pair(
-        self,
-        sym1: str,
-        sym2: str,
-        days: int = 252,
-        params: Optional[BacktestParams] = None,
-    ) -> Dict[str, Any]:
-        """Run a full historical backtest on a pair using mean-reversion strategy.
+    @staticmethod
+    def _run_trading_loop(
+        spread: np.ndarray,
+        z_scores: np.ndarray,
+        dates: List[str],
+        params: BacktestParams,
+        cost_pct: float,
+    ) -> Tuple[List[Dict[str, Any]], List[float]]:
+        """Walk through the spread/z-score series and execute trades.
 
-        Strategy:
-        1. Check cointegration (if required) — skip if not cointegrated
-        2. Compute spread as rolling-OLS residual (or raw ratio legacy)
-        3. Compute rolling z-score of the spread
-        4. Entry when |z| > entry_z; exit when |z| < exit_z; stop at stop_z
-        5. Apply transaction costs on every entry and exit
+        Shared between backtest_pair (OHLC data) and _backtest_pair_fallback
+        (fetch_all_prices) so the entry/exit/stop/MTM logic is never duplicated.
+
+        Returns:
+            (trades, daily_equity) — daily_equity bars from start_idx onward
         """
-        if params is None:
-            params = BacktestParams()
-
-        # ── Fetch prices ──
-        prices_dict = await correlation_service.fetch_all_prices(days)
-        p1 = prices_dict.get(sym1, [])
-        p2 = prices_dict.get(sym2, [])
-
-        min_data = max(params.rolling_window + 5, params.beta_window + 5)
-        if len(p1) < min_data or len(p2) < min_data:
-            return {"error": f"Insufficient data for {sym1}/{sym2} — need at least {min_data} days"}
-
-        min_len = min(len(p1), len(p2))
-        p1_arr = np.array(p1[-min_len:], dtype=float)
-        p2_arr = np.array(p2[-min_len:], dtype=float)
-
-        # ── Cointegration pre-check (always run the test if statsmodels available) ──
-        coint_passed = True
-        coint_pvalue = 1.0
-        half_life = 0.0
-        if _HAS_STATSMODELS:
-            coint_passed, coint_pvalue, half_life = self.is_cointegrated(
-                p1_arr.tolist(), p2_arr.tolist(), params.coint_pvalue
-            )
-
-        coint_info = {
-            "cointegrated": coint_passed,
-            "coint_pvalue": round(coint_pvalue, 4),
-            "half_life_days": round(half_life, 1),
-            "coint_filter_active": params.require_cointegrated,
-        }
-
-        if params.require_cointegrated and not coint_passed and _HAS_STATSMODELS:
-            # Still compute synthetic spread for informational metrics
-            spread, betas = self._compute_spread(p1_arr, p2_arr, params)
-            z_scores = self._compute_zscore(spread, params.rolling_window)
-            return {
-                "error": f"Pair {sym1}/{sym2} is not cointegrated (p={coint_pvalue:.4f}, threshold={params.coint_pvalue}). "
-                         f"Mean-reversion strategy unreliable — try a different pair or disable the cointegration filter.",
-                "sym1": sym1, "sym2": sym2,
-                "coint_info": coint_info,
-                "num_observations": len(spread),
-            }
-
-        # ── Compute spread ──
-        spread, betas = self._compute_spread(p1_arr, p2_arr, params)
-        z_scores = self._compute_zscore(spread, params.rolling_window)
-        cost_pct = params.transaction_cost_pct / 100.0
-
-        # ── Walk through and trade ──
         trades = []
-        current_trade = None  # { side, entry_idx, entry_spread, ... }
-        daily_equity = [0.0]  # cumulative net P&L %
+        current_trade = None
+        daily_equity = [0.0]
 
-        # Determine when we have valid z-scores
         start_idx = max(params.rolling_window, params.beta_window if params.use_hedge_ratio else 0)
 
         for i in range(start_idx, len(spread)):
@@ -337,23 +283,21 @@ class CorrelationSignalService:
                 daily_equity.append(daily_equity[-1])
                 continue
 
-            # ── With an open trade: check stop-loss or target exit ──
             if current_trade is not None:
-                # Stop-loss check
                 if abs(z) >= params.stop_z:
-                    gross_pnl, net_pnl = self._compute_trade_pnl(
+                    gross_pnl, net_pnl = CorrelationSignalService._compute_trade_pnl(
                         current_trade["entry_spread"], spread[i],
                         current_trade["side"], cost_pct,
                     )
                     trades.append({
                         "entry_date": current_trade["entry_date"],
-                        "exit_date": self._idx_to_date(i, days),
+                        "exit_date": dates[i],
                         "entry_spread": round(float(current_trade["entry_spread"]), 6),
                         "exit_spread": round(float(spread[i]), 6),
                         "side": current_trade["side"],
                         "pnl_pct": round(net_pnl * 100, 2),
                         "gross_pnl_pct": round(gross_pnl * 100, 2),
-                        "cost_pct": round(cost_pct * 200, 2),  # entry + exit
+                        "cost_pct": round(cost_pct * 200, 2),
                         "exit_reason": "STOP_LOSS",
                         "bars_held": i - current_trade["entry_idx"],
                     })
@@ -362,15 +306,14 @@ class CorrelationSignalService:
                     current_trade = None
                     continue
 
-                # Target exit check
                 if abs(z) <= params.exit_z:
-                    gross_pnl, net_pnl = self._compute_trade_pnl(
+                    gross_pnl, net_pnl = CorrelationSignalService._compute_trade_pnl(
                         current_trade["entry_spread"], spread[i],
                         current_trade["side"], cost_pct,
                     )
                     trades.append({
                         "entry_date": current_trade["entry_date"],
-                        "exit_date": self._idx_to_date(i, days),
+                        "exit_date": dates[i],
                         "entry_spread": round(float(current_trade["entry_spread"]), 6),
                         "exit_spread": round(float(spread[i]), 6),
                         "side": current_trade["side"],
@@ -385,36 +328,31 @@ class CorrelationSignalService:
                     current_trade = None
                     continue
 
-                # Mark-to-market
                 equity_at_entry = current_trade.get("equity_at_entry", daily_equity[-1])
-                # MTM uses gross P&L (costs only applied at exit)
                 mtm_ret = current_trade["_mtm_fn"](spread[i])
                 current_trade["last_mtm_pnl"] = mtm_ret
                 daily_equity.append(equity_at_entry + mtm_ret)
                 continue
 
-            # ── No open trade: check entry signals ──
             if z < -params.entry_z:
-                # LONG_SPREAD: spread is too low, bet it rises
                 mtm_fn = lambda s, entry=spread[i]: (s - entry) / abs(entry)
                 current_trade = {
                     "side": "LONG_SPREAD",
                     "entry_idx": i,
                     "entry_spread": float(spread[i]),
-                    "entry_date": self._idx_to_date(i, days),
+                    "entry_date": dates[i],
                     "equity_at_entry": daily_equity[-1],
                     "last_mtm_pnl": 0.0,
                     "_mtm_fn": mtm_fn,
                 }
-                daily_equity.append(daily_equity[-1])  # no change on entry
+                daily_equity.append(daily_equity[-1])
             elif z > params.entry_z:
-                # SHORT_SPREAD: spread is too high, bet it falls
                 mtm_fn = lambda s, entry=spread[i]: (entry - s) / abs(entry)
                 current_trade = {
                     "side": "SHORT_SPREAD",
                     "entry_idx": i,
                     "entry_spread": float(spread[i]),
-                    "entry_date": self._idx_to_date(i, days),
+                    "entry_date": dates[i],
                     "equity_at_entry": daily_equity[-1],
                     "last_mtm_pnl": 0.0,
                     "_mtm_fn": mtm_fn,
@@ -425,13 +363,13 @@ class CorrelationSignalService:
 
         # ── Close any open trade at end of data ──
         if current_trade is not None:
-            gross_pnl, net_pnl = self._compute_trade_pnl(
+            gross_pnl, net_pnl = CorrelationSignalService._compute_trade_pnl(
                 current_trade["entry_spread"], spread[-1],
                 current_trade["side"], cost_pct,
             )
             trades.append({
                 "entry_date": current_trade["entry_date"],
-                "exit_date": self._idx_to_date(len(spread) - 1, days),
+                "exit_date": dates[-1],
                 "entry_spread": round(float(current_trade["entry_spread"]), 6),
                 "exit_spread": round(float(spread[-1]), 6),
                 "side": current_trade["side"],
@@ -442,31 +380,62 @@ class CorrelationSignalService:
                 "bars_held": len(spread) - 1 - current_trade["entry_idx"],
             })
 
+        return trades, daily_equity
+
+    @staticmethod
+    def _build_backtest_response(
+        sym1: str, sym2: str, days: int,
+        spread: np.ndarray, z_scores: np.ndarray, betas: Optional[np.ndarray],
+        dates: List[str], trades: List[Dict[str, Any]], daily_equity: List[float],
+        params: BacktestParams, coint_info: Dict[str, Any],
+        price_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build the final backtest response dict from computed data.
+
+        Shared between backtest_pair (OHLC) and _backtest_pair_fallback
+        (fetch_all_prices) so the response formatting is never duplicated.
+        """
         # ── Compute metrics ──
-        result = self._compute_metrics(trades, daily_equity, days)
+        result = CorrelationSignalService._compute_metrics(trades, daily_equity, days)
+
+        start_idx = max(params.rolling_window, params.beta_window if params.use_hedge_ratio else 0)
 
         # ── Equity curve (sampled for charting) ──
         step = max(1, len(daily_equity) // 100)
         equity_curve = []
         for i in range(0, len(daily_equity), step):
+            data_idx = i + start_idx
+            eq_date = dates[data_idx] if data_idx < len(dates) else dates[-1]
             equity_curve.append({
-                "date": self._idx_to_date(i + start_idx, days),
+                "date": eq_date,
                 "equity": round(100 + daily_equity[i] * 100, 2),
             })
+
+        # ── Spread & Z-score series ──
+        spread_series = []
+        for i in range(len(spread)):
+            spread_series.append({
+                "date": dates[i],
+                "spread": round(float(spread[i]), 4),
+                "zscore": round(float(z_scores[i]), 4) if not np.isnan(z_scores[i]) else None,
+            })
+
+        # ── Entry/exit markers ──
+        markers = []
+        for t in trades:
+            markers.append({"date": t["entry_date"], "type": "entry", "side": t["side"], "spread": t["entry_spread"], "pnl_pct": t["pnl_pct"]})
+            markers.append({"date": t["exit_date"], "type": "exit", "side": t["side"], "spread": t["exit_spread"], "pnl_pct": t["pnl_pct"]})
 
         # ── Spread stats ──
         beta_values = betas.tolist() if betas is not None else []
         avg_beta = float(np.nanmean(betas)) if betas is not None and not np.all(np.isnan(betas)) else 1.0
 
         return {
-            "sym1": sym1,
-            "sym2": sym2,
-            "days": days,
+            "sym1": sym1, "sym2": sym2, "days": days,
+            "price_data": price_data,
             "params": {
-                "entry_z": params.entry_z,
-                "exit_z": params.exit_z,
-                "stop_z": params.stop_z,
-                "rolling_window": params.rolling_window,
+                "entry_z": params.entry_z, "exit_z": params.exit_z,
+                "stop_z": params.stop_z, "rolling_window": params.rolling_window,
                 "use_log_ratio": params.use_log_ratio,
                 "use_hedge_ratio": params.use_hedge_ratio,
                 "beta_window": params.beta_window,
@@ -490,14 +459,169 @@ class CorrelationSignalService:
                 "losing_trades": result.losing_trades,
                 "avg_win_pct": round(result.avg_win_pct, 2),
                 "avg_loss_pct": round(result.avg_loss_pct, 2),
-                "profit_factor": round(result.profit_factor, 2),
+                "profit_factor": round(result.profit_factor, 2) if result.profit_factor is not None else None,
                 "avg_bars_held": round(result.avg_bars_held, 1),
             },
             "trades": trades[-50:],
             "total_trades_count": len(trades),
             "equity_curve": equity_curve,
+            "spread_series": spread_series,
+            "markers": markers,
             "num_observations": len(spread),
         }
+
+    # ── Backtest ──
+
+    async def backtest_pair(
+        self,
+        sym1: str,
+        sym2: str,
+        days: int = 252,
+        params: Optional[BacktestParams] = None,
+    ) -> Dict[str, Any]:
+        """Run a full historical backtest on a pair using mean-reversion strategy.
+
+        Strategy:
+        1. Check cointegration (if required) — skip if not cointegrated
+        2. Compute spread as rolling-OLS residual (or raw ratio legacy)
+        3. Compute rolling z-score of the spread
+        4. Entry when |z| > entry_z; exit when |z| < exit_z; stop at stop_z
+        5. Apply transaction costs on every entry and exit
+
+        Uses live OHLC data from nselib for both prices and dates, ensuring
+        all time series (spread, z-score, equity curve) use real trading-day
+        dates instead of synthetic calendar-day dates.
+        """
+        if params is None:
+            params = BacktestParams()
+
+        # ── Fetch OHLC data (single source of truth for prices + real trading dates) ──
+        try:
+            ohlc1 = await correlation_service.fetch_ohlc(sym1, days)
+            ohlc2 = await correlation_service.fetch_ohlc(sym2, days)
+        except Exception as e:
+            logger.error(f"OHLC fetch failed for backtest {sym1}/{sym2}: {e}")
+            return await self._backtest_pair_fallback(sym1, sym2, days, params)
+
+        if not ohlc1 or not ohlc2:
+            return await self._backtest_pair_fallback(sym1, sym2, days, params)
+
+        p1 = ohlc1["close"]
+        p2 = ohlc2["close"]
+        dates = ohlc1["dates"]  # Use sym1's dates (both symbols cover the same trading days)
+
+        min_data = max(params.rolling_window + 5, params.beta_window + 5)
+        if len(p1) < min_data or len(p2) < min_data:
+            return {"error": f"Insufficient data for {sym1}/{sym2} — need at least {min_data} days"}
+
+        min_len = min(len(p1), len(p2))
+        p1_arr = np.array(p1[-min_len:], dtype=float)
+        p2_arr = np.array(p2[-min_len:], dtype=float)
+        dates = dates[-min_len:]
+
+        # ── Cointegration pre-check ──
+        coint_passed, coint_pvalue, half_life = self.is_cointegrated(
+            p1_arr.tolist(), p2_arr.tolist(), params.coint_pvalue
+        )
+
+        coint_info = {
+            "cointegrated": coint_passed,
+            "coint_pvalue": round(coint_pvalue, 4),
+            "half_life_days": round(half_life, 1),
+            "coint_filter_active": params.require_cointegrated,
+        }
+
+        if params.require_cointegrated and not coint_passed:
+            spread, betas = self._compute_spread(p1_arr, p2_arr, params)
+            return {
+                "error": f"Pair {sym1}/{sym2} is not cointegrated (p={coint_pvalue:.4f}, threshold={params.coint_pvalue}).",
+                "sym1": sym1, "sym2": sym2,
+                "price_data": None,
+                "coint_info": coint_info,
+                "num_observations": len(spread),
+            }
+
+        # ── Compute spread ──
+        spread, betas = self._compute_spread(p1_arr, p2_arr, params)
+        z_scores = self._compute_zscore(spread, params.rolling_window)
+        cost_pct = params.transaction_cost_pct / 100.0
+
+        # ── Run trading loop (shared with fallback) ──
+        trades, daily_equity = self._run_trading_loop(spread, z_scores, dates, params, cost_pct)
+
+        # ── Build response (shared with fallback) ──
+        return self._build_backtest_response(
+            sym1, sym2, days, spread, z_scores, betas,
+            dates, trades, daily_equity, params, coint_info,
+            price_data={"sym1": ohlc1, "sym2": ohlc2},
+        )
+
+    async def _backtest_pair_fallback(
+        self,
+        sym1: str,
+        sym2: str,
+        days: int = 252,
+        params: Optional[BacktestParams] = None,
+    ) -> Dict[str, Any]:
+        """Fallback backtest that uses fetch_all_prices + _idx_to_date.
+
+        Used when OHLC data is unavailable (nselib timeout, etc.).
+        Dates use synthetic calendar-day dating — charts won't align with
+        actual trading dates, but metrics are still valid.
+        """
+        if params is None:
+            params = BacktestParams()
+
+        prices_dict = await correlation_service.fetch_all_prices(days, top_n=0)
+        p1 = prices_dict.get(sym1, [])
+        p2 = prices_dict.get(sym2, [])
+
+        min_data = max(params.rolling_window + 5, params.beta_window + 5)
+        if len(p1) < min_data or len(p2) < min_data:
+            return {"error": f"Insufficient data for {sym1}/{sym2} — need at least {min_data} days"}
+
+        min_len = min(len(p1), len(p2))
+        p1_arr = np.array(p1[-min_len:], dtype=float)
+        p2_arr = np.array(p2[-min_len:], dtype=float)
+
+        # Generate synthetic calendar-day dates
+        dates = [self._idx_to_date(i, days) for i in range(min_len)]
+
+        # ── Cointegration pre-check ──
+        coint_passed, coint_pvalue, half_life = self.is_cointegrated(
+            p1_arr.tolist(), p2_arr.tolist(), params.coint_pvalue
+        )
+
+        coint_info = {
+            "cointegrated": coint_passed,
+            "coint_pvalue": round(coint_pvalue, 4),
+            "half_life_days": round(half_life, 1),
+            "coint_filter_active": params.require_cointegrated,
+        }
+
+        if params.require_cointegrated and not coint_passed:
+            return {
+                "error": f"Pair {sym1}/{sym2} is not cointegrated (p={coint_pvalue:.4f}, threshold={params.coint_pvalue}).",
+                "sym1": sym1, "sym2": sym2,
+                "price_data": None,
+                "coint_info": coint_info,
+                "num_observations": min_len,
+            }
+
+        # ── Compute spread ──
+        spread, betas = self._compute_spread(p1_arr, p2_arr, params)
+        z_scores = self._compute_zscore(spread, params.rolling_window)
+        cost_pct = params.transaction_cost_pct / 100.0
+
+        # ── Run trading loop (shared with backtest_pair) ──
+        trades, daily_equity = self._run_trading_loop(spread, z_scores, dates, params, cost_pct)
+
+        # ── Build response (shared with backtest_pair) ──
+        return self._build_backtest_response(
+            sym1, sym2, days, spread, z_scores, betas,
+            dates, trades, daily_equity, params, coint_info,
+            price_data=None,
+        )
 
     # ── Helpers ──
 
@@ -526,11 +650,18 @@ class CorrelationSignalService:
 
         gross_wins = sum(t["pnl_pct"] for t in winning)
         gross_losses = abs(sum(t["pnl_pct"] for t in losing))
-        profit_factor = gross_wins / gross_losses if gross_losses > 0 else float("inf")
+        profit_factor = round(gross_wins / gross_losses, 2) if gross_losses > 0 else None  # no losing trades → undefined
 
         win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
         years = days / 252
-        annualized_return = ((1 + total_return / 100) ** (1 / years) - 1) * 100 if years > 0 else 0
+
+        # Annualized return from equity curve (accounts for compounding)
+        if years > 0 and len(daily_equity) > 1:
+            total_factor = (100.0 + daily_equity[-1]) / 100.0
+            total_return = round((total_factor - 1.0) * 100, 4)  # overwrite simple sum
+            annualized_return = (total_factor ** (1.0 / years) - 1.0) * 100.0
+        else:
+            annualized_return = 0.0
 
         daily_returns = np.diff(daily_equity)
         sharpe = 0.0
@@ -616,183 +747,334 @@ class CorrelationSignalService:
 
     # ── Pair Rankings (Multi-Timeframe + Stability + Score) ──
 
-    async def compute_pair_rankings(self, max_days: int = 252, include_all: bool = False) -> Dict[str, Any]:
-        """Compute comprehensive rankings for ALL 1225 pairs.
+    async def _compute_single_pair(
+        self,
+        sym1: str,
+        sym2: str,
+        prices_dict: Dict[str, List[float]],
+        full_returns: Dict[str, np.ndarray],
+        timeframes: List[int],
+        symbol_to_sector: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Compute all analytics for a single stock pair.
 
-        For each pair, pre-computes:
-        - Correlation at 5d, 10d, 20d, 60d, 126d, 252d
-        - Consistency across timeframes (low std = stable relationship)
-        - Cointegration test (p-value + half-life)
-        - Composite tradability score (0-100)
-
-        Returns best 10, worst 10, each with current signal info (z-score, trade levels).
-        If include_all=True, returns ALL pairs sorted by score (for the Correlation List view).
+        Used by the batch processor to compute pairs in parallel.
         """
-        prices_dict = await correlation_service.fetch_all_prices(max_days)
-        symbols = [s["symbol"] for s in correlation_service.get_stocks()]
+        # Multi-timeframe correlations
+        tf_corrs = {}
+        for tf in timeframes:
+            p1 = prices_dict.get(sym1, [])
+            p2 = prices_dict.get(sym2, [])
+            if len(p1) >= tf and len(p2) >= tf:
+                r1 = correlation_service.compute_returns(p1[-tf:])
+                r2 = correlation_service.compute_returns(p2[-tf:])
+                if len(r1) >= 2 and len(r2) >= 2:
+                    c = float(np.corrcoef(r1, r2)[0, 1])
+                    if np.isnan(c):
+                        c = 0.0
+                    tf_corrs[f"{tf}d"] = round(c, 4)
+
+        # Consistency
+        corr_vals = list(tf_corrs.values())
+        consistency = round(1.0 - min(1.0, float(np.std(corr_vals))), 2) if len(corr_vals) > 1 else 0.50
+        avg_abs = float(np.mean([abs(v) for v in corr_vals])) if corr_vals else 0.0
+
+        # Cointegration test
+        p1_full = prices_dict.get(sym1, [])
+        p2_full = prices_dict.get(sym2, [])
+        is_coint = False
+        coint_pval = 1.0
+        hl = 0.0
+        if len(p1_full) >= 30 and len(p2_full) >= 30:
+            is_coint, coint_pval, hl = self.is_cointegrated(p1_full, p2_full, 0.05)
+
+        # PVR Score
+        r1_full = full_returns.get(sym1, np.array([0.0]))
+        r2_full = full_returns.get(sym2, np.array([0.0]))
+        pvr_spread, pvr_hedge, score = self._compute_pvr(r1_full, r2_full)
+
+        # Live signal (z-score, entry/stop levels)
+        signal_info = self._compute_current_signal(p1_full, p2_full)
+
+        return {
+            "sym1": sym1,
+            "sym2": sym2,
+            "sym1_sector": symbol_to_sector.get(sym1),
+            "sym2_sector": symbol_to_sector.get(sym2),
+            "correlations": tf_corrs,
+            "avg_abs_corr": round(avg_abs, 4),
+            "consistency": consistency,
+            "cointegrated": is_coint,
+            "coint_pvalue": round(coint_pval, 4),
+            "half_life_days": round(hl, 1),
+            "pvr_spread": round(pvr_spread * 100, 1),
+            "pvr_hedge": round(pvr_hedge * 100, 1),
+            "score": score,
+            **signal_info,
+        }
+
+    async def compute_pair_rankings(
+        self,
+        max_days: int = 252,
+        include_all: bool = False,
+        top_n: int = 0,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Compute comprehensive pair rankings for Nifty 50 stocks.
+
+        Architecture:
+        - Pre-computes ALL C(50,2) = 1,225 pairs in async batches
+        - Results are cached for 30 min on the backend
+        - Only the top N best/tradable pairs are returned to the frontend
+
+        Args:
+            max_days: Max lookback period.
+            include_all: If True, return ALL pairs (for full data export).
+            top_n: Number of most liquid stocks to analyze. 0 = all 50.
+            limit: Max number of top-ranked pairs to return (default 50).
+
+        Returns:
+            Dict with best_10, worst_10, and best_pairs (top N by score).
+            Each pair includes: correlations, PVR score, live signal, entry/stop levels.
+        """
+        cache_key = _rankings_cache_key(max_days, top_n)
+        now = time.time()
+
+        # ── Check cache ──
+        if cache_key in _PAIR_RANKINGS_CACHE:
+            cached_at, cached_data = _PAIR_RANKINGS_CACHE[cache_key]
+            if now - cached_at < _CACHE_TTL_SECONDS:
+                logger.info("Using cached pair rankings (%d pairs)", len(cached_data.get("all_pairs", [])))
+                # Return only what's needed from cache
+                return self._build_ranking_response(cached_data, include_all, limit)
+
+        # ── Cache miss: compute from scratch ──
+        logger.info("Computing pair rankings from scratch (cache miss)")
+        prices_dict = await correlation_service.fetch_all_prices(max_days, top_n=top_n)
+        symbols = sorted(prices_dict.keys())
         symbol_to_sector = {s["symbol"]: s["sector"] for s in correlation_service.get_stocks()}
 
         timeframes = [tf for tf in [5, 10, 20, 60, 126, 252] if tf <= max_days]
-        pairs = []
 
+        # ── Pre-compute full returns for each symbol ──
+        full_returns: Dict[str, np.ndarray] = {}
+        for sym in symbols:
+            prices = prices_dict.get(sym, [])
+            if len(prices) >= 10:
+                full_returns[sym] = correlation_service.compute_returns(prices)
+            else:
+                full_returns[sym] = np.array([0.0])
+
+        # ── Generate all pair combinations map ──
+        pair_combos: List[Tuple[str, str]] = []
         for i in range(len(symbols)):
             for j in range(i + 1, len(symbols)):
-                sym1, sym2 = symbols[i], symbols[j]
+                pair_combos.append((symbols[i], symbols[j]))
 
-                # Multi-timeframe correlations
-                tf_corrs = {}
-                for tf in timeframes:
-                    p1 = prices_dict.get(sym1, [])
-                    p2 = prices_dict.get(sym2, [])
-                    if len(p1) >= tf and len(p2) >= tf:
-                        r1 = correlation_service.compute_returns(p1[-tf:])
-                        r2 = correlation_service.compute_returns(p2[-tf:])
-                        if len(r1) >= 2 and len(r2) >= 2:
-                            c = float(np.corrcoef(r1, r2)[0, 1])
-                            if np.isnan(c):
-                                c = 0.0
-                            tf_corrs[f"{tf}d"] = round(c, 4)
+        total_pairs = len(pair_combos)
+        logger.info("Generated %d pair combinations from %d stocks", total_pairs, len(symbols))
 
-                # Consistency — how stable is correlation across timeframes
-                corr_vals = list(tf_corrs.values())
-                consistency = round(1.0 - min(1.0, float(np.std(corr_vals))), 2) if len(corr_vals) > 1 else 0.50
+        # ── Process pairs in async batches ──
+        BATCH_SIZE = 50
+        MAX_CONCURRENT = 10  # semaphore limit for concurrent pair computations
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
-                # Average absolute correlation
-                avg_abs = float(np.mean([abs(v) for v in corr_vals])) if corr_vals else 0.0
+        async def _compute_with_limit(s1: str, s2: str) -> Optional[Dict[str, Any]]:
+            async with semaphore:
+                try:
+                    return await self._compute_single_pair(
+                        s1, s2, prices_dict, full_returns, timeframes, symbol_to_sector
+                    )
+                except Exception as e:
+                    logger.error("Pair computation failed for %s/%s: %s", s1, s2, e)
+                    return None
 
-                # Cointegration test (using longest available data)
-                p1_full = prices_dict.get(sym1, [])
-                p2_full = prices_dict.get(sym2, [])
-                is_coint = False
-                coint_pval = 1.0
-                hl = 0.0
-                if _HAS_STATSMODELS and len(p1_full) >= 30 and len(p2_full) >= 30:
-                    is_coint, coint_pval, hl = self.is_cointegrated(p1_full, p2_full, 0.05)
-
-                # Composite score (0-100)
-                score = self._compute_tradability_score(
-                    avg_abs, consistency, is_coint, coint_pval, hl
-                )
-
-                pairs.append({
-                    "sym1": sym1,
-                    "sym2": sym2,
-                    "sym1_sector": symbol_to_sector.get(sym1),
-                    "sym2_sector": symbol_to_sector.get(sym2),
-                    "correlations": tf_corrs,
-                    "avg_abs_corr": round(avg_abs, 4),
-                    "consistency": consistency,
-                    "cointegrated": is_coint,
-                    "coint_pvalue": round(coint_pval, 4),
-                    "half_life_days": round(hl, 1),
-                    "score": score,
-                })
+        all_pairs: List[Dict[str, Any]] = []
+        for batch_start in range(0, total_pairs, BATCH_SIZE):
+            batch = pair_combos[batch_start:batch_start + BATCH_SIZE]
+            batch_results = await asyncio.gather(*[
+                _compute_with_limit(s1, s2) for s1, s2 in batch
+            ])
+            for r in batch_results:
+                if r is not None:
+                    all_pairs.append(r)
+            logger.info(
+                "Batch %d/%d complete — %d/%d pairs computed",
+                batch_start // BATCH_SIZE + 1,
+                (total_pairs + BATCH_SIZE - 1) // BATCH_SIZE,
+                len(all_pairs),
+                total_pairs,
+            )
 
         # Sort by score descending
-        pairs.sort(key=lambda x: x["score"], reverse=True)
+        all_pairs.sort(key=lambda x: x["score"], reverse=True)
 
-        # ── Compute live signal ──
-        # For include_all=True: enrich ALL 1225 pairs (Correlation List needs signals per row)
-        # For default: only enrich best_10 + worst_10 (saves ~2s on Rankings tab load)
-        if include_all:
-            for p in pairs:
-                p1 = prices_dict.get(p["sym1"], [])
-                p2 = prices_dict.get(p["sym2"], [])
-                signal_info = self._compute_current_signal(p1, p2)
-                p.update(signal_info)
+        # ── Enrich best_10 + worst_10 with backtest metrics inline ──
+        # This runs before caching so cached data always has bt_sharpe, bt_return, etc.
+        default_params = BacktestParams(
+            entry_z=2.0, exit_z=0.0, stop_z=3.0,
+            rolling_window=20, use_hedge_ratio=True,
+            require_cointegrated=False,
+            transaction_cost_pct=0.05,
+        )
+        enrichment_pairs = all_pairs[:10] + (all_pairs[-10:] if len(all_pairs) >= 10 else [])
+        for p in enrichment_pairs:
+            try:
+                bt = await self.backtest_pair(p["sym1"], p["sym2"], days=min(max_days, 252), params=default_params)
+                if "metrics" in bt:
+                    m = bt["metrics"]
+                    p["bt_return"] = m.get("total_return_pct")
+                    p["bt_sharpe"] = m.get("sharpe_ratio")
+                    p["bt_win_rate"] = m.get("win_rate")
+                    p["bt_trades"] = m.get("total_trades")
+                    p["bt_max_dd"] = m.get("max_drawdown_pct")
+                    p["bt_profit_factor"] = m.get("profit_factor")
+            except Exception as e:
+                logger.debug("Auto-backtest failed for %s/%s: %s", p["sym1"], p["sym2"], e)
 
-        best_10 = pairs[:10]
-        worst_10 = pairs[-10:]
-
-        for p in best_10 + worst_10:
-            if "z_score" not in p:  # skip if already enriched via include_all
-                p1 = prices_dict.get(p["sym1"], [])
-                p2 = prices_dict.get(p["sym2"], [])
-                signal_info = self._compute_current_signal(p1, p2)
-                p.update(signal_info)
-
-        result = {
-            "best_10": best_10,
-            "worst_10": worst_10,
-            "total_pairs": len(pairs),
+        # ── Cache the full result (including backtest data) ──
+        cached_payload = {
+            "all_pairs": all_pairs,
             "timeframes": timeframes,
+            "symbol_to_sector": symbol_to_sector,
+            "total_pairs": total_pairs,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+        _PAIR_RANKINGS_CACHE[cache_key] = (time.time(), cached_payload)
+        logger.info("Cached %d pair rankings with backtest data (TTL: %ds)", total_pairs, _CACHE_TTL_SECONDS)
 
-        if include_all:
-            result["all_pairs"] = pairs  # all 1225 pairs
+        # ── Build response ──
+        return self._build_ranking_response(cached_payload, include_all, limit)
 
-        return result
+    def _build_ranking_response(
+        self,
+        cached_payload: Dict[str, Any],
+        include_all: bool = False,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """Build the API response from cached pair data.
+
+        Returns best_10, worst_10, and top `limit` best_pairs.
+        Backtest metrics are already populated in the cached data.
+        """
+        all_pairs = cached_payload["all_pairs"]
+        if not all_pairs:
+            return {
+                "best_10": [],
+                "worst_10": [],
+                "best_pairs": [],
+                "total_pairs": 0,
+                "timeframes": cached_payload.get("timeframes", []),
+                "generated_at": cached_payload.get("generated_at", ""),
+            }
+
+        timeframes = cached_payload["timeframes"]
+        total_pairs = cached_payload["total_pairs"]
+
+        best_10_raw = all_pairs[:10]
+        worst_10_raw = all_pairs[-10:] if len(all_pairs) >= 10 else []
+        best_pairs_raw = all_pairs[:limit] if not include_all else all_pairs
+
+        return {
+            "best_10": best_10_raw,
+            "worst_10": worst_10_raw,
+            "best_pairs": best_pairs_raw,
+            "total_pairs": total_pairs,
+            "timeframes": timeframes,
+            "generated_at": cached_payload["generated_at"],
+            "cached": True,
+        }
+
+    # ── Portfolio Variance Reduction (PVR) Scoring ──
 
     @staticmethod
-    def _compute_tradability_score(
-        avg_abs_corr: float,
-        consistency: float,
-        coint_passed: bool,
-        coint_pvalue: float,
-        half_life: float,
-    ) -> int:
-        """Composite score 0-100 for how tradeable a pair is.
+    def _compute_pvr(
+        returns1: np.ndarray,
+        returns2: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        """Compute Portfolio Variance Reduction for a pair.
 
-        Weighting:
-        - Abs correlation (0-25): higher is better for mean reversion
-        - Consistency (0-20): stable across timeframes
-        - Cointegration (0-35): statistically mean-reverting
-        - Half-life bonus (0-20): fast enough reversion
+        Two modes:
+        1. **PVR_spread** (short-pairs mode): Variance reduction from a long-short
+           spread (A - β·B). This equals ρ² — the squared correlation. High for both
+           strongly positive AND strongly negative pairs.
+
+        2. **PVR_hedge** (buy-both hedge mode): Variance reduction from holding a
+           long-only min-variance portfolio of both stocks. This captures the
+           diversification/hedging benefit — buying two negatively-correlated stocks.
+
+        The final **PVR** = max(PVR_spread, PVR_hedge), so the pair is scored
+        on whichever strategy suits it best.
+
+        Returns:
+            (pvr_spread, pvr_hedge, score_0_100)
         """
-        score = 0
+        # Drop any NaN/inf values
+        mask = ~(np.isnan(returns1) | np.isnan(returns2) | np.isinf(returns1) | np.isinf(returns2))
+        r1, r2 = returns1[mask], returns2[mask]
 
-        # Average absolute correlation (0-25)
-        if avg_abs_corr >= 0.7:
-            score += 25
-        elif avg_abs_corr >= 0.5:
-            score += 18
-        elif avg_abs_corr >= 0.3:
-            score += 10
+        if len(r1) < 10:
+            return 0.0, 0.0, 0
+
+        var1 = float(np.var(r1, ddof=1))
+        var2 = float(np.var(r2, ddof=1))
+
+        if var1 < 1e-15 or var2 < 1e-15:
+            return 0.0, 0.0, 0
+
+        std1, std2 = np.sqrt(var1), np.sqrt(var2)
+        cov = float(np.cov(r1, r2)[0, 1])
+        corr = cov / (std1 * std2)
+        corr = max(-1.0, min(1.0, corr))  # clamp to avoid numerical drift
+
+        # ── PVR Spread (short-pairs mode) — A - β·B
+        # β = cov / var2 → σ²(spread) = σ²(A) · (1 - ρ²)
+        # PVR_spread = 1 - σ²(spread) / σ²(A) = ρ²
+        pvr_spread = max(0.0, corr * corr)
+
+        # ── PVR Hedge (buy-both mode) — min-variance long-only portfolio
+        # Optimal weights: w1* = (var2 - cov) / (var1 + var2 - 2·cov), clipped to [0, 1]
+        denom = var1 + var2 - 2.0 * cov
+        if denom > 1e-15:
+            w1 = (var2 - cov) / denom
+            w1 = max(0.0, min(1.0, w1))
+            w2 = 1.0 - w1
+            port_var = w1 ** 2 * var1 + w2 ** 2 * var2 + 2.0 * w1 * w2 * cov
         else:
-            score += 3
+            port_var = min(var1, var2)
 
-        # Consistency (0-20)
-        score += max(0, min(20, int(consistency * 20)))
-
-        # Cointegration (0-35)
-        if coint_passed and coint_pvalue < 0.01:
-            score += 35
-        elif coint_passed and coint_pvalue < 0.05:
-            score += 30
-        elif not _HAS_STATSMODELS:
-            score += 10  # neutral when statsmodels unavailable
-        elif coint_pvalue < 0.10:
-            score += 15
+        baseline_var = min(var1, var2)
+        if baseline_var > 1e-15:
+            pvr_hedge = max(0.0, 1.0 - port_var / baseline_var)
         else:
-            score += 2
+            pvr_hedge = 0.0
 
-        # Half-life bonus (0-20) — ideal range 5-20 days
-        if 5 < half_life < 20:
-            score += 20
-        elif 3 < half_life < 60:
-            score += 12
-        elif half_life > 0:
-            score += 5
+        # Final score = best of both modes
+        best_pvr = max(pvr_spread, pvr_hedge)
+        score = min(100, max(0, int(round(best_pvr * 100))))
 
-        return min(100, max(0, score))
+        return pvr_spread, pvr_hedge, score
 
     # ── Optimal Parameter Finder (Grid Search) ──
 
-    async def find_optimal_params(self, max_days: int = 252) -> Dict[str, Any]:
+    async def find_optimal_params(self, max_days: int = 252, top_n: int = 10) -> Dict[str, Any]:
         """Grid search over strategy parameters to find what works best.
 
         Tests each parameter independently against defaults on top-ranked pairs.
         Finds optimal: entry_z, exit_z, stop_z, rolling_window, use_hedge_ratio.
+
+        Args:
+            max_days: Max lookback period.
+            top_n: Number of most liquid stocks to analyze. 0 = all 50, 10 = top 10.
         """
         # Get top pairs for testing
-        rankings = await self.compute_pair_rankings(max_days)
+        rankings = await self.compute_pair_rankings(max_days, top_n=top_n)
         # Select top pairs that are cointegrated (or highest scored)
         test_pairs = []
         for p in rankings.get("best_10", []):
             if len(test_pairs) >= 5:
                 break
-            if _HAS_STATSMODELS and p.get("cointegrated", False):
+            if p.get("cointegrated", False):
                 test_pairs.append(p)
         # Fallback: top 3 by score if no cointegrated pairs found
         if not test_pairs and rankings.get("best_10"):
@@ -931,7 +1213,7 @@ class CorrelationSignalService:
                 is_coint = True
                 coint_pval = 1.0
                 hl = 0.0
-                if require_cointegrated and _HAS_STATSMODELS:
+                if require_cointegrated:
                     prices_dict = await correlation_service.fetch_all_prices(timeframe)
                     pr1 = prices_dict.get(pair["sym1"], [])
                     pr2 = prices_dict.get(pair["sym2"], [])
@@ -970,9 +1252,18 @@ class CorrelationSignalService:
             "timeframe": timeframe,
             "min_z": min_z,
             "require_cointegrated": require_cointegrated,
-            "has_statsmodels": _HAS_STATSMODELS,
+            "has_statsmodels": True,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+
+# ── Pair Rankings Cache ──
+_PAIR_RANKINGS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_CACHE_TTL_SECONDS = 1800  # 30 minutes
+
+
+def _rankings_cache_key(max_days: int, top_n: int) -> str:
+    return f"rankings_{max_days}_{top_n}"
 
 
 # Singleton

@@ -17,7 +17,6 @@ import {
   TrendingUp,
   TrendingDown,
   Activity,
-  HelpCircle,
   FlaskConical,
   Play,
   Settings2,
@@ -25,6 +24,12 @@ import {
 import axios from "axios";
 import { API } from "../App";
 import { toast } from "sonner";
+import {
+  TooltipProvider,
+  Tooltip as ShadcnTooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "./ui/tooltip";
 
 const METRIC_DESCRIPTIONS = {
   Correlation: "Measures how two stocks move together. +1 = perfectly together, -1 = opposite, 0 = no relationship.",
@@ -87,6 +92,15 @@ function CustomTooltip({ active, payload, label }) {
 
 export default function CorrelationPairDetail({ pair, onClose }) {
   if (!pair) return null;
+
+  return (
+    <TooltipProvider>
+      <PairDetailInner pair={pair} onClose={onClose} />
+    </TooltipProvider>
+  );
+}
+
+function PairDetailInner({ pair, onClose }) {
 
   const {
     sym1, sym2,
@@ -219,22 +233,25 @@ export default function CorrelationPairDetail({ pair, onClose }) {
 }
 
 function MetricBox({ label, value, unit, color, description }) {
-  const [showTip, setShowTip] = useState(false);
   return (
     <div className="bg-zinc-800/50 rounded-lg px-2.5 sm:px-3 py-2 border border-zinc-800 relative">
       <div className="flex items-center gap-1 mb-0.5">
         <div className="text-[9px] text-zinc-600 uppercase tracking-wider">{label}</div>
         {description && (
-          <div className="relative">
-            <button onMouseEnter={() => setShowTip(true)} onMouseLeave={() => setShowTip(false)} onFocus={() => setShowTip(true)} onBlur={() => setShowTip(false)} className="text-zinc-700 hover:text-zinc-500 transition-colors">
-              <HelpCircle className="w-2.5 h-2.5" />
-            </button>
-            {showTip && (
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-30 pointer-events-none">
-                <div className="bg-zinc-800 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-[10px] text-zinc-300 whitespace-normal w-48 shadow-xl">{description}</div>
-              </div>
-            )}
-          </div>
+          <ShadcnTooltip delayDuration={200}>
+            <TooltipTrigger asChild>
+              <span className="inline-flex items-center cursor-help">
+                <svg className="w-2.5 h-2.5 text-zinc-700 hover:text-zinc-400 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                  <path d="M12 17h.01" />
+                </svg>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" align="center" className="max-w-48 bg-zinc-800 border-zinc-700 text-zinc-300 text-[10px] leading-relaxed">
+              {description}
+            </TooltipContent>
+          </ShadcnTooltip>
         )}
       </div>
       <div className={`font-mono text-sm font-semibold ${color || "text-zinc-200"}`}>{value}{unit || ""}</div>
@@ -272,7 +289,7 @@ function BacktestPanel({ sym1, sym2 }) {
         stop_z: params.stop_z,
         rolling_window: params.rolling_window,
         use_log_ratio: params.use_log_ratio,
-      }, { timeout: 60000 });
+      }, { timeout: 300000 });  // 5 min — backtest fetches all 252d prices via nselib
       setResult(res.data);
     } catch (err) {
       toast.error(`Backtest failed: ${err.response?.data?.detail || err.message}`);

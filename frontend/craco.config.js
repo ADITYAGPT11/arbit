@@ -54,6 +54,14 @@ const webpackConfig = {
       return webpackConfig;
     },
   },
+  devServer: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+    },
+  },
 };
 
 // Add health check endpoints if enabled

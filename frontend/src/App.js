@@ -19,8 +19,10 @@ import ConnectBroker from "./pages/ConnectBroker";
 import CorrelationAnalysis from "./pages/CorrelationAnalysis";
 import Layout from "./components/Layout";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
-export const API = `${BACKEND_URL}/api`;
+// In development, requests are proxied through the CRA dev server (see craco.config.js proxy).
+// Set REACT_APP_BACKEND_URL for production deployments or to use a different backend.
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
+export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
 // App Router — all pages public, no auth required
 function AppRouter() {

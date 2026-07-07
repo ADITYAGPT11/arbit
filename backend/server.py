@@ -4,13 +4,13 @@ Pure API-driven: fetches live data from brokers and computes analytics on the fl
 """
 
 import asyncio
+import json
 import logging
 from pathlib import Path
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.gzip import GZipMiddleware
-from starlette.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp, Scope, Receive, Send, Message
 
 from core.deps import set_service_flags
 from core.config import settings
@@ -41,6 +41,62 @@ logger = logging.getLogger(__name__)
 # ── App ──
 app = FastAPI(title="Indian Markets Arbitrage Platform")
 api_router = APIRouter(prefix="/api")
+
+
+# ── Pure ASGI CORS middleware — injects headers at the protocol level ──
+
+class CORSHeadersMiddleware:
+    """ASGI middleware that adds CORS headers to every response.
+
+    Operates at the raw ASGI Send/Receive level — intercepts the
+    'http.response.start' message and appends CORS headers before
+    forwarding it. This is the most reliable approach because:
+    - It runs at the ASGI protocol level, before any Starlette middleware
+    - It works on every response type (streaming, file, JSON, etc.)
+    - It works even if an error occurs during response processing
+    - It handles OPTIONS preflight requests correctly
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_cors(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"access-control-allow-origin", b"*"))
+                headers.append((b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS, PATCH"))
+                headers.append((b"access-control-allow-headers", b"*"))
+                headers.append((b"access-control-max-age", b"86400"))
+                message["headers"] = headers
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_cors)
+        except Exception as exc:
+            logger.exception("Unhandled exception in request handler")
+            body = json.dumps({"detail": str(exc)}).encode("utf-8")
+            headers = [
+                (b"access-control-allow-origin", b"*"),
+                (b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS, PATCH"),
+                (b"access-control-allow-headers", b"*"),
+                (b"access-control-max-age", b"86400"),
+                (b"content-type", b"application/json"),
+            ]
+            await send({
+                "type": "http.response.start",
+                "status": 500,
+                "headers": headers,
+            })
+            await send({
+                "type": "http.response.body",
+                "body": body,
+            })
+
 
 # ── Attempt external service imports & set availability flags ──
 
@@ -119,17 +175,14 @@ api_router.include_router(risk_router.router)
 api_router.include_router(backtest_router.router)
 api_router.include_router(correlation_router.router)
 
-app.include_router(api_router)
-
 # ── Middleware ──
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.include_router(api_router)
+
+# CORS middleware must be the outermost layer so it wraps everything
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(CORSHeadersMiddleware)  # outermost — wraps everything, runs first/last
+
 
 # ── Startup ──
 
@@ -156,7 +209,7 @@ async def startup_event():
             t0 = time.time()
             await asyncio.wait_for(
                 correlation_service.fetch_all_prices(20),
-                timeout=120,
+                timeout=300,
             )
             elapsed = time.time() - t0
             logger.info("Price cache warmed in %.1fs — first load will be instant", elapsed)

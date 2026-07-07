@@ -72,34 +72,42 @@ async def get_sector_correlation(
 @router.get("/pair-rankings")
 async def get_pair_rankings(
     max_days: int = Query(252, description="Max lookback period", ge=60, le=756),
-    include_all: bool = Query(False, description="Include all 1225 pairs (not just best/worst 10)"),
+    include_all: bool = Query(False, description="Return ALL pairs (default: only best N)"),
+    top_n: int = Query(0, description="Number of most liquid stocks to analyze (0 = all 50)", ge=0, le=50),
+    limit: int = Query(50, description="Max top-ranked pairs to return", ge=10, le=200),
 ):
-    """Comprehensive pair rankings for ALL 1225 pairs.
+    """Comprehensive pair rankings for Nifty 50 stocks.
 
-    Returns best 10 and worst 10 pairs ranked by a composite tradability score.
-    Each entry includes:
-    - Correlation at 5d, 10d, 20d, 60d, 126d, 252d
-    - Consistency across timeframes
-    - Cointegration p-value and half-life
-    - Composite score (0-100)
-    - Current live signal (z-score, signal direction, entry/stop levels)
+    Architecture:
+    - Backend pre-computes ALL C(50,2) = 1,225 pairs in async batches (~30s)
+    - Results are cached for 30 minutes — subsequent requests are instant
+    - Only the top `limit` best-tradable pairs are returned to the frontend
 
-    Set include_all=true to get ALL 1225 pairs (for the Correlation List view).
+    Returns:
+        best_10: Top 10 pairs by composite score (with auto-backtest data)
+        worst_10: Bottom 10 pairs (negative correlation, for hedging)
+        best_pairs: Top `limit` pairs sorted by score (for the Correlation List view)
+        total_pairs: Total number of pairs computed
+
+    Set include_all=true to get ALL pairs (for data export / debugging).
     """
-    result = await correlation_signal_service.compute_pair_rankings(max_days=max_days, include_all=include_all)
+    result = await correlation_signal_service.compute_pair_rankings(
+        max_days=max_days, include_all=include_all, top_n=top_n, limit=limit
+    )
     return result
 
 
 @router.get("/optimal-params")
 async def get_optimal_params(
     max_days: int = Query(252, description="Max lookback period", ge=60, le=756),
+    top_n: int = Query(10, description="Number of most liquid stocks to analyze", ge=0, le=50),
 ):
     """Find optimal strategy parameters via grid search on top-ranked pairs.
 
     Tests different values for entry_z, exit_z, stop_z, rolling_window,
     and use_hedge_ratio. Returns the best combination found.
     """
-    result = await correlation_signal_service.find_optimal_params(max_days=max_days)
+    result = await correlation_signal_service.find_optimal_params(max_days=max_days, top_n=top_n)
     return result
 
 
